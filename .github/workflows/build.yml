@@ -2,6 +2,8 @@ name: Build
 
 on:
   push:
+    branches:
+      - main
     tags:
       - 'v*'
   workflow_dispatch:
@@ -28,7 +30,12 @@ jobs:
         run: bun install
 
       - name: Download Claude binary
-        run: bun run claude:download
+        run: |
+          bun run claude:download
+          echo "Verifying binary exists..."
+          ls -la resources/bin/
+          ls -la resources/bin/darwin-arm64/
+          file resources/bin/darwin-arm64/claude
 
       - name: Build application
         run: bun run build
@@ -37,6 +44,12 @@ jobs:
         run: npx electron-builder --mac --arm64 --config.mac.identity=null
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Verify binary in app bundle
+        run: |
+          echo "Checking app bundle contents..."
+          ls -la "release/mac-arm64/1Code.app/Contents/Resources/bin/" || echo "Binary dir not found!"
+          file "release/mac-arm64/1Code.app/Contents/Resources/bin/claude" || echo "Claude binary not found!"
 
       - name: Upload DMG artifact
         uses: actions/upload-artifact@v4
@@ -55,7 +68,6 @@ jobs:
   release:
     needs: build-macos
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
 
@@ -65,11 +77,23 @@ jobs:
         with:
           path: artifacts
 
+      - name: Get release info
+        id: release_info
+        run: |
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+            echo "prerelease=false" >> $GITHUB_OUTPUT
+          else
+            echo "tag=build-${{ github.run_number }}" >> $GITHUB_OUTPUT
+            echo "prerelease=true" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release_info.outputs.tag }}
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.zip
-          draft: true
+          prerelease: ${{ steps.release_info.outputs.prerelease }}
           generate_release_notes: true
