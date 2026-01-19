@@ -230,6 +230,7 @@ export const AgentEditTool = memo(function AgentEditTool({
   const filePath = part.input?.file_path || ""
   const oldString = part.input?.old_string || ""
   const newString = part.input?.new_string || ""
+
   // For Write mode, content is in input.content
   const writeContent = part.input?.content || ""
 

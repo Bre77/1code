@@ -783,8 +783,7 @@ export const AgentsMentionsEditor = memo(
       // Handle keydown
       const handleKeyDown = useCallback(
         (e: React.KeyboardEvent) => {
-          // Prevent submission during IME composition (e.g., Chinese/Japanese/Korean input)
-          if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+          if (e.key === "Enter" && !e.shiftKey) {
             if (triggerActive.current || slashTriggerActive.current) {
               // Let dropdown handle Enter
               return

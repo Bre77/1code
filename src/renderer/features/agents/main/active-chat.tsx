@@ -52,6 +52,7 @@ import { Chat, useChat } from "@ai-sdk/react"
 import { DiffModeEnum } from "@git-diff-view/react"
 import { atom, useAtom, useAtomValue, useSetAtom } from "jotai"
 import {
+  ArrowDown,
   ChevronDown,
   Columns2,
   Eye,
@@ -62,9 +63,10 @@ import {
   Rows2,
   TerminalSquare,
 } from "lucide-react"
-import { motion } from "motion/react"
+import { motion, AnimatePresence } from "motion/react"
 import {
   createContext,
+  memo,
   useCallback,
   useContext,
   useEffect,
@@ -707,6 +709,67 @@ function PlayButton({
   )
 }
 
+// Isolated scroll-to-bottom button - uses own scroll listener to avoid re-renders of parent
+const ScrollToBottomButton = memo(function ScrollToBottomButton({
+  containerRef,
+  onScrollToBottom,
+}: {
+  containerRef: React.RefObject<HTMLElement | null>
+  onScrollToBottom: () => void
+}) {
+  const [isVisible, setIsVisible] = useState(false)
+
+  useEffect(() => {
+    const container = containerRef.current
+    if (!container) return
+
+    const checkVisibility = () => {
+      const threshold = 50
+      const atBottom =
+        container.scrollHeight - container.scrollTop - container.clientHeight <=
+        threshold
+      setIsVisible(!atBottom)
+    }
+
+    // Check initial state
+    checkVisibility()
+
+    container.addEventListener("scroll", checkVisibility, { passive: true })
+    return () => container.removeEventListener("scroll", checkVisibility)
+  }, [containerRef])
+
+  return (
+    <AnimatePresence>
+      {isVisible && (
+        <Tooltip delayDuration={300}>
+          <TooltipTrigger asChild>
+            <motion.button
+              initial={{ opacity: 0, scale: 0.96, y: 8 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.96, y: 8 }}
+              transition={{ duration: 0.2, ease: [0.23, 1, 0.32, 1] }}
+              onClick={onScrollToBottom}
+              className="absolute bottom-24 right-4 p-2 rounded-full bg-background border border-border shadow-md hover:bg-accent active:scale-[0.97] transition-colors z-20"
+              aria-label="Scroll to bottom"
+            >
+              <ArrowDown className="h-4 w-4 text-muted-foreground" />
+            </motion.button>
+          </TooltipTrigger>
+          <TooltipContent side="top">
+            Scroll to bottom
+            <span className="inline-flex items-center gap-0.5">
+              <Kbd>⌘</Kbd>
+              <Kbd>
+                <ArrowDown className="h-3 w-3" />
+              </Kbd>
+            </span>
+          </TooltipContent>
+        </Tooltip>
+      )}
+    </AnimatePresence>
+  )
+})
+
 // Message group wrapper - measures user message height for sticky todo positioning
 interface MessageGroupProps {
   children: React.ReactNode
@@ -934,6 +997,43 @@ function ChatViewInner({
     // If user scrolls DOWN and reaches bottom - enable auto-scroll
     shouldAutoScrollRef.current = isAtBottom()
   }, [isAtBottom])
+
+  // Scroll to bottom handler with ease-in-out animation
+  const scrollToBottom = useCallback(() => {
+    const container = chatContainerRef.current
+    if (!container) return
+
+    isAutoScrollingRef.current = true
+    shouldAutoScrollRef.current = true
+
+    const start = container.scrollTop
+    const duration = 300 // ms
+    const startTime = performance.now()
+
+    // Ease-in-out cubic function
+    const easeInOutCubic = (t: number) =>
+      t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
+
+    const animateScroll = (currentTime: number) => {
+      const elapsed = currentTime - startTime
+      const progress = Math.min(elapsed / duration, 1)
+      const easedProgress = easeInOutCubic(progress)
+
+      // Calculate end on each frame to handle dynamic content
+      const end = container.scrollHeight - container.clientHeight
+      container.scrollTop = start + (end - start) * easedProgress
+
+      if (progress < 1) {
+        requestAnimationFrame(animateScroll)
+      } else {
+        // Ensure we're at the absolute bottom
+        container.scrollTop = container.scrollHeight
+        isAutoScrollingRef.current = false
+      }
+    }
+
+    requestAnimationFrame(animateScroll)
+  }, [])
 
   // tRPC utils for cache invalidation
   const utils = api.useUtils()
@@ -1554,6 +1654,7 @@ function ChatViewInner({
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
       let shouldStop = false
+      let shouldSkipQuestions = false
 
       // Check for Escape key without modifiers (works even from input fields, like terminal Ctrl+C)
       // Ignore if Cmd/Ctrl is pressed (reserved for Cmd+Esc to focus input)
@@ -1572,8 +1673,19 @@ function ChatViewInner({
           '[role="dialog"], [role="alertdialog"], [role="menu"], [role="listbox"], [data-radix-popper-content-wrapper], [data-state="open"]',
         )
 
-        if (!isInsideOverlay) {
-          shouldStop = true
+        // Also check if any dialog/modal is open anywhere in the document (not just at event target)
+        // This prevents stopping stream when settings dialog is open but not focused
+        const hasOpenDialog = document.querySelector(
+          '[role="dialog"][aria-modal="true"], [data-modal="agents-settings"]',
+        )
+
+        if (!isInsideOverlay && !hasOpenDialog) {
+          // If there are pending questions for this chat, skip them instead of stopping stream
+          if (pendingQuestions?.subChatId === subChatId) {
+            shouldSkipQuestions = true
+          } else {
+            shouldStop = true
+          }
         }
       }
 
@@ -1600,7 +1712,10 @@ function ChatViewInner({
         shouldStop = true
       }
 
-      if (shouldStop) {
+      if (shouldSkipQuestions) {
+        e.preventDefault()
+        await handleQuestionsSkip()
+      } else if (shouldStop) {
         e.preventDefault()
         // Mark as manually aborted to prevent completion sound
         agentChatStore.setManuallyAborted(subChatId, true)
@@ -1615,7 +1730,7 @@ function ChatViewInner({
 
     window.addEventListener("keydown", handleKeyDown)
     return () => window.removeEventListener("keydown", handleKeyDown)
-  }, [isStreaming, stop, subChatId])
+  }, [isStreaming, stop, subChatId, pendingQuestions, handleQuestionsSkip])
 
   // Keyboard shortcut: Enter to focus input when not already focused
   useFocusInputOnEnter(editorRef)
@@ -2103,6 +2218,24 @@ function ChatViewInner({
     return () => window.removeEventListener("keydown", handleKeyDown)
   }, [hasUnapprovedPlan, isStreaming, handleApprovePlan])
 
+  // Cmd/Ctrl + Arrow Down to scroll to bottom (works even when focused in input)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (
+        e.key === "ArrowDown" &&
+        (e.metaKey || e.ctrlKey) &&
+        !e.altKey &&
+        !e.shiftKey
+      ) {
+        e.preventDefault()
+        scrollToBottom()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [scrollToBottom])
+
   // Clean up pending plan approval when unmounting
   useEffect(() => {
     return () => {
@@ -2131,7 +2264,7 @@ function ChatViewInner({
   }, [messages, status, syncMessages])
 
   return (
-    <>
+    <div className="flex flex-col flex-1 min-h-0 relative">
       {/* Chat title - flex above scroll area (desktop only) */}
       {!isMobile && (
         <div
@@ -2239,7 +2372,13 @@ function ChatViewInner({
         changedFiles={changedFilesForSubChat}
         isMobile={isMobile}
       />
-    </>
+
+      {/* Scroll to bottom button - isolated component to avoid re-renders during streaming */}
+      <ScrollToBottomButton
+        containerRef={chatContainerRef}
+        onScrollToBottom={scrollToBottom}
+      />
+    </div>
   )
 }
 

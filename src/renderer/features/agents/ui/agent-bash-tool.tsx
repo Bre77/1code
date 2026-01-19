@@ -50,6 +50,16 @@ export const AgentBashTool = memo(function AgentBashTool({
   const { isPending } = getToolStatus(part, chatStatus)
 
   const command = part.input?.command || ""
+
+  // Debug logging
+  console.log('[AgentBashTool] render', {
+    toolCallId: part.toolCallId,
+    state: part.state,
+    chatStatus,
+    command: command?.slice(0, 50),
+    hasInput: !!part.input,
+    isPending,
+  })
   const stdout = part.output?.stdout || part.output?.output || ""
   const stderr = part.output?.stderr || ""
   const exitCode = part.output?.exitCode ?? part.output?.exit_code

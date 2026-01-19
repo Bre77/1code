@@ -17,6 +17,7 @@ import {
   trackWorkspaceDeleted,
   trackPRCreated,
 } from "../../analytics"
+import { terminalManager } from "../../terminal/manager"
 
 // Fallback to truncated user message if AI generation fails
 function getFallbackName(userMessage: string): string {
@@ -265,12 +266,27 @@ export const chatsRouter = router({
     }),
 
   /**
-   * Archive a chat
+   * Archive a chat (also kills any terminal processes in the workspace)
+   * Optionally deletes the worktree to free disk space
    */
   archive: publicProcedure
-    .input(z.object({ id: z.string() }))
-    .mutation(({ input }) => {
+    .input(
+      z.object({
+        id: z.string(),
+        deleteWorktree: z.boolean().default(false),
+      }),
+    )
+    .mutation(async ({ input }) => {
       const db = getDatabase()
+
+      // Get chat to check for worktree (before archiving)
+      const chat = db
+        .select()
+        .from(chats)
+        .where(eq(chats.id, input.id))
+        .get()
+
+      // Archive immediately (optimistic)
       const result = db
         .update(chats)
         .set({ archivedAt: new Date() })
@@ -280,6 +296,47 @@ export const chatsRouter = router({
 
       // Track workspace archived
       trackWorkspaceArchived(input.id)
+
+      // Kill terminal processes in background (don't await)
+      terminalManager.killByWorkspaceId(input.id).then((killResult) => {
+        if (killResult.killed > 0) {
+          console.log(
+            `[chats.archive] Killed ${killResult.killed} terminal session(s) for workspace ${input.id}`,
+          )
+        }
+      }).catch((error) => {
+        console.error(`[chats.archive] Error killing processes:`, error)
+      })
+
+      // Optionally delete worktree in background (don't await)
+      if (input.deleteWorktree && chat?.worktreePath && chat?.branch) {
+        const project = db
+          .select()
+          .from(projects)
+          .where(eq(projects.id, chat.projectId))
+          .get()
+
+        if (project) {
+          removeWorktree(project.path, chat.worktreePath).then((worktreeResult) => {
+            if (worktreeResult.success) {
+              console.log(
+                `[chats.archive] Deleted worktree for workspace ${input.id}`,
+              )
+              // Clear worktreePath since it's deleted (keep branch for reference)
+              db.update(chats)
+                .set({ worktreePath: null })
+                .where(eq(chats.id, input.id))
+                .run()
+            } else {
+              console.warn(
+                `[chats.archive] Failed to delete worktree: ${worktreeResult.error}`,
+              )
+            }
+          }).catch((error) => {
+            console.error(`[chats.archive] Error removing worktree:`, error)
+          })
+        }
+      }
 
       return result
     }),
@@ -300,19 +357,37 @@ export const chatsRouter = router({
     }),
 
   /**
-   * Archive multiple chats at once
+   * Archive multiple chats at once (also kills terminal processes in each workspace)
    */
   archiveBatch: publicProcedure
     .input(z.object({ chatIds: z.array(z.string()) }))
     .mutation(({ input }) => {
       const db = getDatabase()
       if (input.chatIds.length === 0) return []
-      return db
+
+      // Archive immediately (optimistic)
+      const result = db
         .update(chats)
         .set({ archivedAt: new Date() })
         .where(inArray(chats.id, input.chatIds))
         .returning()
         .all()
+
+      // Kill terminal processes for all workspaces in background (don't await)
+      Promise.all(
+        input.chatIds.map((id) => terminalManager.killByWorkspaceId(id)),
+      ).then((killResults) => {
+        const totalKilled = killResults.reduce((sum, r) => sum + r.killed, 0)
+        if (totalKilled > 0) {
+          console.log(
+            `[chats.archiveBatch] Killed ${totalKilled} terminal session(s) for ${input.chatIds.length} workspace(s)`,
+          )
+        }
+      }).catch((error) => {
+        console.error(`[chats.archiveBatch] Error killing processes:`, error)
+      })
+
+      return result
     }),
 
   /**
@@ -919,4 +994,38 @@ export const chatsRouter = router({
 
     return pendingApprovals
   }),
+
+  /**
+   * Get worktree status for archive dialog
+   * Returns whether workspace has a worktree and uncommitted changes count
+   */
+  getWorktreeStatus: publicProcedure
+    .input(z.object({ chatId: z.string() }))
+    .query(async ({ input }) => {
+      const db = getDatabase()
+      const chat = db
+        .select()
+        .from(chats)
+        .where(eq(chats.id, input.chatId))
+        .get()
+
+      // No worktree if no branch (local mode)
+      if (!chat?.worktreePath || !chat?.branch) {
+        return { hasWorktree: false, uncommittedCount: 0 }
+      }
+
+      try {
+        const git = simpleGit(chat.worktreePath)
+        const status = await git.status()
+
+        return {
+          hasWorktree: true,
+          uncommittedCount: status.files.length,
+        }
+      } catch (error) {
+        // Worktree path doesn't exist or git error
+        console.warn("[getWorktreeStatus] Error checking worktree:", error)
+        return { hasWorktree: false, uncommittedCount: 0 }
+      }
+    }),
 })

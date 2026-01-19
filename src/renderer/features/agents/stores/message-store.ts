@@ -387,6 +387,7 @@ const previousMessageState = new Map<string, {
   partsLength: number
   lastPartText: string | undefined
   lastPartState: string | undefined
+  lastPartInputJson: string | undefined
 }>()
 
 function hasMessageChanged(subChatId: string, msgId: string, msg: Message): boolean {
@@ -399,6 +400,7 @@ function hasMessageChanged(subChatId: string, msgId: string, msg: Message): bool
     partsLength: parts.length,
     lastPartText: lastPart?.text,
     lastPartState: lastPart?.state,
+    lastPartInputJson: lastPart?.input ? JSON.stringify(lastPart.input) : undefined,
   }
 
   if (!prev) {
@@ -409,7 +411,8 @@ function hasMessageChanged(subChatId: string, msgId: string, msg: Message): bool
   const changed =
     prev.partsLength !== current.partsLength ||
     prev.lastPartText !== current.lastPartText ||
-    prev.lastPartState !== current.lastPartState
+    prev.lastPartState !== current.lastPartState ||
+    prev.lastPartInputJson !== current.lastPartInputJson
 
   if (changed) {
     previousMessageState.set(cacheKey, current)
@@ -469,9 +472,20 @@ export const syncMessagesWithStatusAtom = atom(
 
     // Update individual message atoms ONLY if they changed
     // This is the key optimization - only changed messages trigger re-renders
+    // CRITICAL: AI SDK mutates objects in-place, so we MUST create a new reference
+    // for Jotai to detect the change (it uses Object.is() for comparison)
+    // We need to deep clone the message because:
+    // 1. msg object itself is mutated in-place
+    // 2. msg.parts array is mutated in-place
+    // 3. Individual part objects inside parts are mutated in-place
     for (const msg of messages) {
       if (hasMessageChanged(currentSubChatId, msg.id, msg)) {
-        set(messageAtomFamily(msg.id), msg)
+        // Deep clone message with new parts array and new part objects
+        const clonedMsg = {
+          ...msg,
+          parts: msg.parts?.map((part: any) => ({ ...part, input: part.input ? { ...part.input } : undefined })),
+        }
+        set(messageAtomFamily(msg.id), clonedMsg)
       }
     }
 
@@ -539,3 +553,38 @@ export function clearAllCaches() {
     clearSubChatCaches(subChatId)
   }
 }
+
+// ============================================================================
+// TTS PLAYBACK RATE - For PlayButton
+// ============================================================================
+// Stored in localStorage and accessible via Jotai atom.
+// This allows PlayButton to manage its own state without passing callbacks
+// through props (which would break memoization).
+
+export const PLAYBACK_SPEEDS = [1, 2, 3] as const
+export type PlaybackSpeed = (typeof PLAYBACK_SPEEDS)[number]
+
+// Atom with localStorage persistence
+export const ttsPlaybackRateAtom = atom<PlaybackSpeed>(
+  // Initial value from localStorage
+  (() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("tts-playback-rate")
+      if (saved && PLAYBACK_SPEEDS.includes(Number(saved) as PlaybackSpeed)) {
+        return Number(saved) as PlaybackSpeed
+      }
+    }
+    return 1
+  })()
+)
+
+// Write atom that also persists to localStorage
+export const setTtsPlaybackRateAtom = atom(
+  null,
+  (_get, set, rate: PlaybackSpeed) => {
+    set(ttsPlaybackRateAtom, rate)
+    if (typeof window !== "undefined") {
+      localStorage.setItem("tts-playback-rate", String(rate))
+    }
+  }
+)
