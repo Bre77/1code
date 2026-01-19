@@ -2,8 +2,6 @@
 # This extends the base config in package.json
 
 mac:
-  # Code signing identity - set via APPLE_IDENTITY env var
-  # Example: "Developer ID Application: Your Name (TEAM_ID)"
-  identity: ${env.APPLE_IDENTITY}
-  notarize:
-    teamId: ${env.APPLE_TEAM_ID}
+  # For distribution: set APPLE_IDENTITY env var to "Developer ID Application: Name (TEAMID)"
+  # Without it, builds are unsigned - users must run: xattr -cr /Applications/1Code.app
+  identity: null
