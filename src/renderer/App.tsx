@@ -1,8 +1,10 @@
-import { useEffect, useMemo } from "react"
 import { Provider as JotaiProvider, useAtomValue, useSetAtom } from "jotai"
 import { ThemeProvider, useTheme } from "next-themes"
+import { useEffect, useMemo } from "react"
 import { Toaster } from "sonner"
+import { TooltipProvider } from "./components/ui/tooltip"
 import { TRPCProvider } from "./contexts/TRPCProvider"
+import { selectedProjectAtom } from "./features/agents/atoms"
 import { AgentsLayout } from "./features/layout/agents-layout"
 import {
   AnthropicOnboardingPage,
@@ -10,16 +12,13 @@ import {
   BillingMethodPage,
   SelectRepoPage,
 } from "./features/onboarding"
-import { TooltipProvider } from "./components/ui/tooltip"
-import { appStore } from "./lib/jotai-store"
-import { initAnalytics, identify, shutdown } from "./lib/analytics"
-import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
+import { identify, initAnalytics, shutdown } from "./lib/analytics"
 import {
-  anthropicOnboardingCompletedAtom,
-  apiKeyOnboardingCompletedAtom,
-  billingMethodAtom,
+  anthropicOnboardingCompletedAtom, apiKeyOnboardingCompletedAtom,
+  billingMethodAtom
 } from "./lib/atoms"
-import { selectedProjectAtom } from "./features/agents/atoms"
+import { appStore } from "./lib/jotai-store"
+import { VSCodeThemeProvider } from "./lib/themes/theme-provider"
 import { trpc } from "./lib/trpc"
 
 /**
@@ -46,8 +45,15 @@ function AppContent() {
   const anthropicOnboardingCompleted = useAtomValue(
     anthropicOnboardingCompletedAtom
   )
+  const setAnthropicOnboardingCompleted = useSetAtom(anthropicOnboardingCompletedAtom)
   const apiKeyOnboardingCompleted = useAtomValue(apiKeyOnboardingCompletedAtom)
+  const setApiKeyOnboardingCompleted = useSetAtom(apiKeyOnboardingCompletedAtom)
   const selectedProject = useAtomValue(selectedProjectAtom)
+
+  // Check if user has existing CLI config (API key or proxy)
+  // Based on PR #29 by @sa4hnd
+  const { data: cliConfig, isLoading: isLoadingCliConfig } =
+    trpc.claudeCode.hasExistingCliConfig.useQuery()
 
   // Migration: If user already completed Anthropic onboarding but has no billing method set,
   // automatically set it to "claude-subscription" (legacy users before billing method was added)
@@ -56,6 +62,16 @@ function AppContent() {
       setBillingMethod("claude-subscription")
     }
   }, [billingMethod, anthropicOnboardingCompleted, setBillingMethod])
+
+  // Auto-skip onboarding if user has existing CLI config (API key or proxy)
+  // This allows users with ANTHROPIC_API_KEY to use the app without OAuth
+  useEffect(() => {
+    if (cliConfig?.hasConfig && !billingMethod) {
+      console.log("[App] Detected existing CLI config, auto-completing onboarding")
+      setBillingMethod("api-key")
+      setApiKeyOnboardingCompleted(true)
+    }
+  }, [cliConfig?.hasConfig, billingMethod, setBillingMethod, setApiKeyOnboardingCompleted])
 
   // Fetch projects to validate selectedProject exists
   const { data: projects, isLoading: isLoadingProjects } =

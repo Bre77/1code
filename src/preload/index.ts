@@ -25,7 +25,7 @@ contextBridge.exposeInMainWorld("desktopApi", {
   isPackaged: () => ipcRenderer.invoke("app:isPackaged"),
 
   // Auto-update methods
-  checkForUpdates: () => ipcRenderer.invoke("update:check"),
+  checkForUpdates: (force?: boolean) => ipcRenderer.invoke("update:check", force),
   downloadUpdate: () => ipcRenderer.invoke("update:download"),
   installUpdate: () => ipcRenderer.invoke("update:install"),
 
@@ -76,6 +76,11 @@ contextBridge.exposeInMainWorld("desktopApi", {
   setTrafficLightVisibility: (visible: boolean) =>
     ipcRenderer.invoke("window:set-traffic-light-visibility", visible),
 
+  // Windows-specific: Frame preference (native vs frameless)
+  setWindowFramePreference: (useNativeFrame: boolean) =>
+    ipcRenderer.invoke("window:set-frame-preference", useNativeFrame),
+  getWindowFrameState: () => ipcRenderer.invoke("window:get-frame-state"),
+
   // Window events
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => {
     const handler = (_event: unknown, isFullscreen: boolean) => callback(isFullscreen)
@@ -96,12 +101,14 @@ contextBridge.exposeInMainWorld("desktopApi", {
 
   // DevTools
   toggleDevTools: () => ipcRenderer.invoke("window:toggle-devtools"),
+  unlockDevTools: () => ipcRenderer.invoke("window:unlock-devtools"),
 
   // Analytics
   setAnalyticsOptOut: (optedOut: boolean) => ipcRenderer.invoke("analytics:set-opt-out", optedOut),
 
   // Native features
   setBadge: (count: number | null) => ipcRenderer.invoke("app:set-badge", count),
+  setBadgeIcon: (imageData: string | null) => ipcRenderer.invoke("app:set-badge-icon", imageData),
   showNotification: (options: { title: string; body: string }) =>
     ipcRenderer.invoke("app:show-notification", options),
   openExternal: (url: string) => ipcRenderer.invoke("shell:open-external", url),
@@ -196,6 +203,9 @@ export interface DesktopApi {
   windowToggleFullscreen: () => Promise<void>
   windowIsFullscreen: () => Promise<boolean>
   setTrafficLightVisibility: (visible: boolean) => Promise<void>
+  // Windows-specific frame preference
+  setWindowFramePreference: (useNativeFrame: boolean) => Promise<boolean>
+  getWindowFrameState: () => Promise<boolean>
   onFullscreenChange: (callback: (isFullscreen: boolean) => void) => () => void
   onFocusChange: (callback: (isFocused: boolean) => void) => () => void
   zoomIn: () => Promise<void>
@@ -203,8 +213,10 @@ export interface DesktopApi {
   zoomReset: () => Promise<void>
   getZoom: () => Promise<number>
   toggleDevTools: () => Promise<void>
+  unlockDevTools: () => Promise<void>
   setAnalyticsOptOut: (optedOut: boolean) => Promise<void>
   setBadge: (count: number | null) => Promise<void>
+  setBadgeIcon: (imageData: string | null) => Promise<void>
   showNotification: (options: { title: string; body: string }) => Promise<void>
   openExternal: (url: string) => Promise<void>
   getApiBaseUrl: () => Promise<string>
