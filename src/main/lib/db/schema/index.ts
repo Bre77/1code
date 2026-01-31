@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
+import { index, sqliteTable, text, integer } from "drizzle-orm/sqlite-core"
 import { relations } from "drizzle-orm"
 import { createId } from "../utils"
 
@@ -20,6 +20,8 @@ export const projects = sqliteTable("projects", {
   gitProvider: text("git_provider"), // "github" | "gitlab" | "bitbucket" | null
   gitOwner: text("git_owner"),
   gitRepo: text("git_repo"),
+  // Custom project icon (absolute path to local image file)
+  iconPath: text("icon_path"),
 })
 
 export const projectsRelations = relations(projects, ({ many }) => ({
@@ -49,7 +51,9 @@ export const chats = sqliteTable("chats", {
   // PR tracking fields
   prUrl: text("pr_url"),
   prNumber: integer("pr_number"),
-})
+}, (table) => [
+  index("chats_worktree_path_idx").on(table.worktreePath),
+])
 
 export const chatsRelations = relations(chats, ({ one, many }) => ({
   project: one(projects, {
@@ -89,6 +93,7 @@ export const subChatsRelations = relations(subChats, ({ one }) => ({
 
 // ============ CLAUDE CODE CREDENTIALS ============
 // Stores encrypted OAuth token for Claude Code integration
+// DEPRECATED: Use anthropicAccounts for multi-account support
 export const claudeCodeCredentials = sqliteTable("claude_code_credentials", {
   id: text("id").primaryKey().default("default"), // Single row, always "default"
   oauthToken: text("oauth_token").notNull(), // Encrypted with safeStorage
@@ -96,6 +101,31 @@ export const claudeCodeCredentials = sqliteTable("claude_code_credentials", {
     () => new Date(),
   ),
   userId: text("user_id"), // Desktop auth user ID (for reference)
+})
+
+// ============ ANTHROPIC ACCOUNTS (Multi-account support) ============
+// Stores multiple Anthropic OAuth accounts for quick switching
+export const anthropicAccounts = sqliteTable("anthropic_accounts", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => createId()),
+  email: text("email"), // User's email from OAuth (if available)
+  displayName: text("display_name"), // User-editable label
+  oauthToken: text("oauth_token").notNull(), // Encrypted with safeStorage
+  connectedAt: integer("connected_at", { mode: "timestamp" }).$defaultFn(
+    () => new Date(),
+  ),
+  lastUsedAt: integer("last_used_at", { mode: "timestamp" }),
+  desktopUserId: text("desktop_user_id"), // Reference to 21st.dev user
+})
+
+// Tracks which Anthropic account is currently active
+export const anthropicSettings = sqliteTable("anthropic_settings", {
+  id: text("id").primaryKey().default("singleton"), // Single row
+  activeAccountId: text("active_account_id"), // References anthropicAccounts.id
+  updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(
+    () => new Date(),
+  ),
 })
 
 // ============ TYPE EXPORTS ============
@@ -107,3 +137,6 @@ export type SubChat = typeof subChats.$inferSelect
 export type NewSubChat = typeof subChats.$inferInsert
 export type ClaudeCodeCredential = typeof claudeCodeCredentials.$inferSelect
 export type NewClaudeCodeCredential = typeof claudeCodeCredentials.$inferInsert
+export type AnthropicAccount = typeof anthropicAccounts.$inferSelect
+export type NewAnthropicAccount = typeof anthropicAccounts.$inferInsert
+export type AnthropicSettings = typeof anthropicSettings.$inferSelect

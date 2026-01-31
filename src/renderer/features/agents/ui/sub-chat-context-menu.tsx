@@ -9,18 +9,23 @@ import {
 } from "../../../components/ui/context-menu"
 import { Kbd } from "../../../components/ui/kbd"
 import { isMac } from "../../../lib/utils"
+import { isDesktopApp } from "../../../lib/utils/platform"
 import type { SubChatMeta } from "../stores/sub-chat-store"
-import { getShortcutKey } from "../../../lib/utils/platform"
+import { useResolvedHotkeyDisplay } from "../../../lib/hotkeys"
 import { exportChat, copyChat, type ExportFormat } from "../lib/export-chat"
 
-// Platform-aware keyboard shortcut
-// Web: ⌥⌘W (browser uses Cmd+W to close tab)
-// Desktop: ⌘W
+const openInNewWindow = (chatId: string, subChatId: string) => {
+  window.desktopApi?.newWindow({ chatId, subChatId })
+}
+
+// Platform-aware keyboard shortcut for close tab
+// Uses custom hotkey from settings if configured
 const useCloseTabShortcut = () => {
+  const archiveAgentHotkey = useResolvedHotkeyDisplay("archive-agent")
   return useMemo(() => {
     if (!isMac) return "Alt+Ctrl+W"
-    return getShortcutKey("closeTab")
-  }, [])
+    return archiveAgentHotkey || "⌘W"
+  }, [archiveAgentHotkey])
 }
 
 interface SubChatContextMenuProps {
@@ -110,6 +115,11 @@ export function SubChatContextMenu({
             </ContextMenuItem>
           </ContextMenuSubContent>
         </ContextMenuSub>
+      )}
+      {isDesktopApp() && chatId && (
+        <ContextMenuItem onClick={() => openInNewWindow(chatId, subChat.id)}>
+          Open in new window
+        </ContextMenuItem>
       )}
       <ContextMenuSeparator />
 

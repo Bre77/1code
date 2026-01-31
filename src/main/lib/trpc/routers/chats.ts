@@ -16,6 +16,7 @@ import {
   fetchGitHubPRStatus,
   getWorktreeDiff,
   removeWorktree,
+  sanitizeProjectName,
 } from "../../git"
 import { computeContentHash, gitCache } from "../../git/cache"
 import { splitUnifiedDiffByFile } from "../../git/diff-parser"
@@ -264,6 +265,12 @@ export const chatsRouter = router({
                   base64Data: z.string().optional(),
                 }),
               }),
+              // Hidden file content - sent to agent but not displayed in UI
+              z.object({
+                type: z.literal("file-content"),
+                filePath: z.string(),
+                content: z.string(),
+              }),
             ]),
           )
           .optional(),
@@ -344,7 +351,7 @@ export const chatsRouter = router({
         )
         const result = await createWorktreeForChat(
           project.path,
-          project.id,
+          sanitizeProjectName(project.name),
           chat.id,
           input.baseBranch,
           input.branchType,
@@ -709,8 +716,13 @@ export const chatsRouter = router({
       // 4. Rollback git state first - if this fails, abort the whole operation
       if (chat?.worktreePath) {
         const res = await applyRollbackStash(chat.worktreePath, input.sdkMessageUuid)
-        if (!res) {
-          return { success: false, error: `Git rollback failed` }
+        if (!res.success) {
+          return { success: false, error: `Git rollback failed: ${res.error}` }
+        }
+        // If checkpoint wasn't found, we still fail because we can't safely rollback
+        // without reverting the git state to match the message history
+        if (!res.checkpointFound) {
+          return { success: false, error: "Checkpoint not found - cannot rollback git state" }
         }
       }
 
@@ -1077,8 +1089,9 @@ export const chatsRouter = router({
 
       // Fallback: Generate commit message with conventional commits style
       const fileNames = files.map((f) => {
-        const path = f.newPath !== "/dev/null" ? f.newPath : f.oldPath
-        return path.split("/").pop() || path
+        const filePath = f.newPath !== "/dev/null" ? f.newPath : f.oldPath
+        // Note: Git diff paths always use forward slashes
+        return path.posix.basename(filePath) || filePath
       })
 
       // Detect commit type from file changes

@@ -1,11 +1,33 @@
 import { atom } from "jotai"
 import { atomFamily, atomWithStorage } from "jotai/utils"
+import { atomWithWindowStorage } from "../../../lib/window-storage"
+import type { FileMentionOption } from "../mentions/agents-mentions-editor"
+
+// Agent mode type - extensible for future modes like "debug"
+export type AgentMode = "agent" | "plan"
+
+// Ordered list of modes - Shift+Tab cycles through these
+export const AGENT_MODES: AgentMode[] = ["agent", "plan"]
+
+// Get next mode in cycle (for Shift+Tab toggle)
+export function getNextMode(current: AgentMode): AgentMode {
+  const idx = AGENT_MODES.indexOf(current)
+  return AGENT_MODES[(idx + 1) % AGENT_MODES.length]
+}
 
 // Selected agent chat ID - null means "new chat" view (persisted to restore on reload)
-export const selectedAgentChatIdAtom = atomWithStorage<string | null>(
+// Uses window-scoped storage so each Electron window can have its own selected chat
+export const selectedAgentChatIdAtom = atomWithWindowStorage<string | null>(
   "agents:selectedChatId",
   null,
-  undefined,
+  { getOnInit: true },
+)
+
+// Whether the selected chat is a remote (sandbox) chat
+// This is needed because remote and local chats may have the same ID
+export const selectedChatIsRemoteAtom = atomWithWindowStorage<boolean>(
+  "agents:selectedChatIsRemote",
+  false,
   { getOnInit: true },
 )
 
@@ -17,6 +39,15 @@ export const previousAgentChatIdAtom = atom<string | null>(null)
 // NewChatForm uses this to restore the draft text
 // Reset to null when "New Workspace" is clicked or chat is created
 export const selectedDraftIdAtom = atom<string | null>(null)
+
+// Show new chat form explicitly - true by default so new users see the form, not kanban
+// Set to false when kanban is explicitly opened (via hotkey or button)
+// Set to true when "New Workspace" is clicked
+export const showNewChatFormAtom = atom<boolean>(true)
+
+// Pending mention to insert into the editor from external components (e.g. MCP widget in sidebar)
+// When set, active-chat picks it up, calls editorRef.insertMention(), and resets to null
+export const pendingMentionAtom = atom<FileMentionOption | null>(null)
 
 // Preview paths storage - stores all preview paths keyed by chatId
 const previewPathsStorageAtom = atomWithStorage<Record<string, string>>(
@@ -163,10 +194,10 @@ export type SelectedProject = {
   gitRepo?: string | null
 } | null
 
-export const selectedProjectAtom = atomWithStorage<SelectedProject>(
+// Selected local project - uses window-scoped storage so each window can work with different projects
+export const selectedProjectAtom = atomWithWindowStorage<SelectedProject>(
   "agents:selectedProject",
   null,
-  undefined,
   { getOnInit: true },
 )
 
@@ -179,16 +210,28 @@ export const lastSelectedAgentIdAtom = atomWithStorage<string>(
 
 export const lastSelectedModelIdAtom = atomWithStorage<string>(
   "agents:lastSelectedModelId",
-  "sonnet",
+  "opus",
   undefined,
   { getOnInit: true },
 )
 
-export const isPlanModeAtom = atomWithStorage<boolean>(
-  "agents:isPlanMode",
-  false,
+// Storage for all sub-chat modes (persisted per subChatId)
+const subChatModesStorageAtom = atomWithStorage<Record<string, AgentMode>>(
+  "agents:subChatModes",
+  {},
   undefined,
   { getOnInit: true },
+)
+
+// atomFamily to get/set mode per subChatId
+export const subChatModeAtomFamily = atomFamily((subChatId: string) =>
+  atom(
+    (get) => get(subChatModesStorageAtom)[subChatId] ?? "agent",
+    (get, set, newMode: AgentMode) => {
+      const current = get(subChatModesStorageAtom)
+      set(subChatModesStorageAtom, { ...current, [subChatId]: newMode })
+    },
+  ),
 )
 
 // Model ID to full Claude model string mapping
@@ -198,11 +241,10 @@ export const MODEL_ID_MAP: Record<string, string> = {
   haiku: "haiku",
 }
 
-// Sidebar state
-export const agentsSidebarOpenAtom = atomWithStorage<boolean>(
+// Sidebar state - window-scoped so each window has independent sidebar visibility
+export const agentsSidebarOpenAtom = atomWithWindowStorage<boolean>(
   "agents-sidebar-open",
   true,
-  undefined,
   { getOnInit: true },
 )
 
@@ -222,10 +264,10 @@ export const agentsPreviewSidebarWidthAtom = atomWithStorage<number>(
   { getOnInit: true },
 )
 
-export const agentsPreviewSidebarOpenAtom = atomWithStorage<boolean>(
+// Preview sidebar open state - window-scoped
+export const agentsPreviewSidebarOpenAtom = atomWithWindowStorage<boolean>(
   "agents-preview-sidebar-open",
   true,
-  undefined,
   { getOnInit: true },
 )
 
@@ -264,11 +306,10 @@ export const diffViewDisplayModeAtom = atomWithStorage<DiffViewDisplayMode>(
   { getOnInit: true },
 )
 
-// Diff sidebar open state storage - stores per chatId (persisted)
-const diffSidebarOpenStorageAtom = atomWithStorage<Record<string, boolean>>(
+// Diff sidebar open state storage - window-scoped, stores per chatId
+const diffSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, boolean>>(
   "agents:diffSidebarOpen",
   {},
-  undefined,
   { getOnInit: true },
 )
 
@@ -310,10 +351,9 @@ export const diffSidebarOpenAtomFamily = atomFamily((chatId: string) =>
 
 // Legacy global atom - kept for backwards compatibility, maps to empty string key
 // TODO: Remove after migration
-export const agentsDiffSidebarOpenAtom = atomWithStorage<boolean>(
+export const agentsDiffSidebarOpenAtom = atomWithWindowStorage<boolean>(
   "agents-diff-sidebar-open",
   false,
-  undefined,
   { getOnInit: true },
 )
 
@@ -336,9 +376,10 @@ export const diffFilesCollapsedAtomFamily = atomFamily((chatId: string) =>
 )
 
 // Sub-chats display mode - tabs (horizontal) or sidebar (vertical list)
-export const agentsSubChatsSidebarModeAtom = atomWithStorage<
+// Window-scoped so each window can have its own layout preference
+export const agentsSubChatsSidebarModeAtom = atomWithWindowStorage<
   "tabs" | "sidebar"
->("agents-subchats-mode", "tabs", undefined, { getOnInit: true })
+>("agents-subchats-mode", "tabs", { getOnInit: true })
 
 // Sub-chats sidebar width (left side of chat area)
 export const agentsSubChatsSidebarWidthAtom = atomWithStorage<number>(
@@ -375,6 +416,33 @@ export const currentTodosAtomFamily = atomFamily((subChatId: string) =>
     (get, set, newState: TodoState) => {
       const current = get(allTodosStorageAtom)
       set(allTodosStorageAtom, { ...current, [subChatId]: newState })
+    },
+  ),
+)
+
+// Current task tools state per sub-chat (from TaskCreate/TaskUpdate/TaskList/TaskGet)
+// Synced from AgentTaskToolsGroup component snapshot cache
+export interface TaskToolItem {
+  id: string
+  subject: string
+  description?: string
+  activeForm?: string
+  status: "pending" | "in_progress" | "completed"
+}
+
+interface TaskToolState {
+  tasks: TaskToolItem[]
+}
+
+const allTaskToolsStorageAtom = atom<Record<string, TaskToolState>>({})
+
+// atomFamily to get/set task tool state per subChatId
+export const currentTaskToolsAtomFamily = atomFamily((subChatId: string) =>
+  atom(
+    (get) => get(allTaskToolsStorageAtom)[subChatId] ?? { tasks: [] },
+    (get, set, newState: TaskToolState) => {
+      const current = get(allTaskToolsStorageAtom)
+      set(allTaskToolsStorageAtom, { ...current, [subChatId]: newState })
     },
   ),
 )
@@ -599,6 +667,11 @@ export const pendingUserQuestionsAtom = atom<Map<string, PendingUserQuestion>>(n
 // Legacy type alias for backwards compatibility
 export type PendingUserQuestions = PendingUserQuestion
 
+// Expired user questions - questions that timed out but should still be answerable
+// When answered, responses are sent as normal user messages instead of tool approvals
+// Map<subChatId, PendingUserQuestion>
+export const expiredUserQuestionsAtom = atom<Map<string, PendingUserQuestion>>(new Map())
+
 // Track sub-chats with pending plan approval (plan ready but not yet implemented)
 // Map<subChatId, parentChatId> - allows filtering by workspace
 export const pendingPlanApprovalsAtom = atom<Map<string, string>>(new Map())
@@ -614,7 +687,7 @@ export const askUserQuestionResultsAtom = atom<Map<string, unknown>>(new Map())
 // Unified undo stack for workspace and sub-chat archivation
 // Supports Cmd+Z to restore the last archived item (workspace or sub-chat)
 export type UndoItem =
-  | { type: "workspace"; chatId: string; timeoutId: ReturnType<typeof setTimeout> }
+  | { type: "workspace"; chatId: string; timeoutId: ReturnType<typeof setTimeout>; isRemote?: boolean }
   | { type: "subchat"; subChatId: string; chatId: string; timeoutId: ReturnType<typeof setTimeout> }
 
 export const undoStackAtom = atom<UndoItem[]>([])
@@ -648,6 +721,9 @@ export const viewedFilesAtomFamily = atomFamily((chatId: string) =>
   ),
 )
 
+// Open Locally dialog trigger - set to chatId to open dialog for that chat
+export const openLocallyChatIdAtom = atom<string | null>(null)
+
 // Plan sidebar state atoms
 
 // Plan sidebar width (global, persisted)
@@ -659,10 +735,10 @@ export const agentsPlanSidebarWidthAtom = atomWithStorage<number>(
 )
 
 // Plan sidebar open state storage - stores per chatId (persisted)
-const planSidebarOpenStorageAtom = atomWithStorage<Record<string, boolean>>(
+// Uses window-scoped storage so each window can have independent plan sidebar states
+const planSidebarOpenStorageAtom = atomWithWindowStorage<Record<string, boolean>>(
   "agents:planSidebarOpen",
   {},
-  undefined,
   { getOnInit: true },
 )
 
@@ -771,6 +847,154 @@ export const workspaceDiffCacheAtomFamily = atomFamily((chatId: string) =>
         ...current,
         [chatId]: newCache,
       })
+    },
+  ),
+)
+
+// Show raw JSON for each message in chat (dev only)
+export const showMessageJsonAtom = atomWithStorage<boolean>(
+  "agents:showMessageJson",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// ============================================================================
+// DESKTOP VIEW NAVIGATION (Automations / Inbox)
+// ============================================================================
+
+// Desktop view mode - takes priority over chat-based rendering
+// null = default behavior (chat/new-chat/kanban)
+export type DesktopView = "automations" | "automations-detail" | "inbox" | "settings" | null
+export const desktopViewAtom = atom<DesktopView>(null)
+
+// Which automation is being viewed/edited (ID or "new" for creation)
+export const automationDetailIdAtom = atom<string | null>(null)
+
+// Template params passed when navigating from "Use Template" to create
+export type AutomationTemplateParams = {
+  name: string
+  platform: string
+  trigger: string
+  instructions: string
+} | null
+export const automationTemplateParamsAtom = atom<AutomationTemplateParams>(null)
+
+// Selected chat within inbox (separate from main selectedAgentChatIdAtom)
+export const inboxSelectedChatIdAtom = atom<string | null>(null)
+
+// Inbox sidebar width
+export const agentsInboxSidebarWidthAtom = atomWithStorage<number>(
+  "agents-inbox-sidebar-width",
+  240,
+  undefined,
+  { getOnInit: true },
+)
+
+// Inbox mobile view mode
+export type InboxMobileViewMode = "list" | "chat"
+export const inboxMobileViewModeAtom = atom<InboxMobileViewMode>("list")
+
+// Settings inner sidebar widths (for MCP, Skills, Agents two-panel layouts)
+// Non-persisted — resets to default on re-render
+export const settingsMcpSidebarWidthAtom = atom(240)
+export const settingsSkillsSidebarWidthAtom = atom(240)
+export const settingsAgentsSidebarWidthAtom = atom(240)
+export const settingsKeyboardSidebarWidthAtom = atom(240)
+export const settingsProjectsSidebarWidthAtom = atom(240)
+
+// File viewer display mode - sidebar (side peek), center dialog, or fullscreen
+export type FileViewerDisplayMode = "side-peek" | "center-peek" | "full-page"
+
+export const fileViewerDisplayModeAtom = atomWithStorage<FileViewerDisplayMode>(
+  "agents:fileViewerDisplayMode",
+  "side-peek",
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer sidebar width (persisted)
+export const fileViewerSidebarWidthAtom = atomWithStorage<number>(
+  "agents:fileViewerSidebarWidth",
+  500,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer word wrap preference (persisted)
+export const fileViewerWordWrapAtom = atomWithStorage<boolean>(
+  "agents:fileViewerWordWrap",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer minimap preference (persisted)
+export const fileViewerMinimapAtom = atomWithStorage<boolean>(
+  "agents:fileViewerMinimap",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer line numbers preference (persisted)
+export const fileViewerLineNumbersAtom = atomWithStorage<boolean>(
+  "agents:fileViewerLineNumbers",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer sticky scroll preference (persisted)
+export const fileViewerStickyScrollAtom = atomWithStorage<boolean>(
+  "agents:fileViewerStickyScroll",
+  false,
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer render whitespace preference (persisted)
+export type FileViewerWhitespace = "none" | "selection" | "all"
+export const fileViewerWhitespaceAtom = atomWithStorage<FileViewerWhitespace>(
+  "agents:fileViewerWhitespace",
+  "selection",
+  undefined,
+  { getOnInit: true },
+)
+
+// File viewer bracket pair colorization preference (persisted)
+export const fileViewerBracketPairsAtom = atomWithStorage<boolean>(
+  "agents:fileViewerBracketPairs",
+  true,
+  undefined,
+  { getOnInit: true },
+)
+
+// File search dialog open state (Cmd+P)
+export const fileSearchDialogOpenAtom = atom<boolean>(false)
+
+// File viewer open state - stores the currently open file path per chatId
+const fileViewerOpenStorageAtom = atom<Record<string, string | null>>({})
+
+// Recently opened files - ordered list (most recent first), max 50
+const MAX_RECENT_FILES = 50
+export const recentlyOpenedFilesAtom = atom<string[]>([])
+
+export const fileViewerOpenAtomFamily = atomFamily((chatId: string) =>
+  atom(
+    (get) => get(fileViewerOpenStorageAtom)[chatId] ?? null,
+    (get, set, filePath: string | null) => {
+      const current = get(fileViewerOpenStorageAtom)
+      set(fileViewerOpenStorageAtom, { ...current, [chatId]: filePath })
+      // Track in recently opened files
+      if (filePath) {
+        const recent = get(recentlyOpenedFilesAtom)
+        const filtered = recent.filter((p) => p !== filePath)
+        set(
+          recentlyOpenedFilesAtom,
+          [filePath, ...filtered].slice(0, MAX_RECENT_FILES),
+        )
+      }
     },
   ),
 )

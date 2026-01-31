@@ -1,8 +1,8 @@
 "use client"
 
-import { useAtom, useAtomValue } from "jotai"
-import { ChevronDown, Zap } from "lucide-react"
-import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { useAtom, useAtomValue, useSetAtom } from "jotai"
+import { ChevronDown, Loader2, RefreshCw, Zap } from "lucide-react"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom"
 
 import { Button } from "../../../components/ui/button"
@@ -18,7 +18,9 @@ import {
   AttachIcon,
   CheckIcon,
   ClaudeCodeIcon,
+  OriginalMCPIcon,
   PlanIcon,
+  SettingsIcon,
   ThinkingIcon,
 } from "../../../components/ui/icons"
 import { Kbd } from "../../../components/ui/kbd"
@@ -29,17 +31,30 @@ import {
 } from "../../../components/ui/prompt-input"
 import { Switch } from "../../../components/ui/switch"
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "../../../components/ui/tooltip"
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "../../../components/ui/popover"
+import {
+  agentsSettingsDialogActiveTabAtom,
+  agentsSettingsDialogOpenAtom,
   autoOfflineModeAtom,
   customClaudeConfigAtom,
   extendedThinkingEnabledAtom,
   normalizeCustomClaudeConfig,
   selectedOllamaModelAtom,
-  showOfflineModeFeaturesAtom
+  showOfflineModeFeaturesAtom,
 } from "../../../lib/atoms"
 import { trpc } from "../../../lib/trpc"
 import { cn } from "../../../lib/utils"
-import { isPlanModeAtom, lastSelectedModelIdAtom, type SubChatFileChange } from "../atoms"
-import { AgentsSlashCommand, COMMAND_PROMPTS, type SlashCommandOption } from "../commands"
+import { lastSelectedModelIdAtom, subChatModeAtomFamily, getNextMode, type AgentMode, type SubChatFileChange } from "../atoms"
+import { useAgentSubChatStore } from "../stores/sub-chat-store"
+import { AgentsSlashCommand, type SlashCommandOption } from "../commands"
 import { AgentSendButton } from "../components/agent-send-button"
 import type { UploadedFile, UploadedImage } from "../hooks/use-agents-file-upload"
 import {
@@ -60,8 +75,17 @@ import { AgentFileItem } from "../ui/agent-file-item"
 import { AgentImageItem } from "../ui/agent-image-item"
 import { AgentPastedTextItem } from "../ui/agent-pasted-text-item"
 import { AgentTextContextItem } from "../ui/agent-text-context-item"
+import { VoiceWaveIndicator } from "../ui/voice-wave-indicator"
+import { McpStatusDot } from "../../../components/dialogs/settings-tabs/agents-mcp-tab"
 import { handlePasteEvent } from "../utils/paste-text"
 import type { PastedTextFile } from "../hooks/use-pasted-text-files"
+import {
+  useVoiceRecording,
+  blobToBase64,
+  getAudioFormat,
+} from "../../../lib/hooks/use-voice-recording"
+import { getResolvedHotkey } from "../../../lib/hotkeys"
+import { customHotkeysAtom } from "../../../lib/atoms"
 
 // Hook to get available models (including offline models if Ollama is available and debug enabled)
 function useAvailableModels() {
@@ -132,6 +156,8 @@ export interface ChatInputAreaProps {
   pastedTexts?: PastedTextFile[]
   onAddPastedText?: (text: string) => Promise<void>
   onRemovePastedText?: (id: string) => void
+  // Callback to cache file content for dropped text files (content added to prompt on send)
+  onCacheFileContent?: (mentionId: string, content: string) => void
   // Pre-computed token data for context indicator (avoids passing messages array)
   messageTokenData: MessageTokenData
   // Context
@@ -170,7 +196,9 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.repository !== nextProps.repository ||
     prevProps.sandboxId !== nextProps.sandboxId ||
     prevProps.projectPath !== nextProps.projectPath ||
-    prevProps.isMobile !== nextProps.isMobile
+    prevProps.isMobile !== nextProps.isMobile ||
+    prevProps.queueLength !== nextProps.queueLength ||
+    prevProps.firstQueueItemId !== nextProps.firstQueueItemId
   ) {
     return false
   }
@@ -196,8 +224,10 @@ function arePropsEqual(prevProps: ChatInputAreaProps, nextProps: ChatInputAreaPr
     prevProps.onRemoveTextContext !== nextProps.onRemoveTextContext ||
     prevProps.onAddPastedText !== nextProps.onAddPastedText ||
     prevProps.onRemovePastedText !== nextProps.onRemovePastedText ||
+    prevProps.onCacheFileContent !== nextProps.onCacheFileContent ||
     prevProps.onInputContentChange !== nextProps.onInputContentChange ||
-    prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer
+    prevProps.onSubmitWithQuestionAnswer !== nextProps.onSubmitWithQuestionAnswer ||
+    prevProps.onSendFromQueue !== nextProps.onSendFromQueue
   ) {
     return false
   }
@@ -328,6 +358,7 @@ export const ChatInputArea = memo(function ChatInputArea({
   pastedTexts = [],
   onAddPastedText,
   onRemovePastedText,
+  onCacheFileContent,
   messageTokenData,
   subChatId,
   parentChatId,
@@ -382,8 +413,17 @@ export const ChatInputArea = memo(function ChatInputArea({
   const autoOfflineMode = useAtomValue(autoOfflineModeAtom)
   const showOfflineFeatures = useAtomValue(showOfflineModeFeaturesAtom)
   const [selectedModel, setSelectedModel] = useState(
-    () => availableModels.models.find((m) => m.id === lastSelectedModelId) || availableModels.models[1],
+    () => availableModels.models.find((m) => m.id === lastSelectedModelId) || availableModels.models[0],
   )
+
+  // Sync selectedModel when atom value changes (e.g., after localStorage hydration)
+  useEffect(() => {
+    const model = availableModels.models.find((m) => m.id === lastSelectedModelId)
+    if (model && model.id !== selectedModel.id) {
+      setSelectedModel(model)
+    }
+  }, [lastSelectedModelId])
+
   const customClaudeConfig = useAtomValue(customClaudeConfigAtom)
   const normalizedCustomClaudeConfig =
     normalizeCustomClaudeConfig(customClaudeConfig)
@@ -402,12 +442,104 @@ export const ChatInputArea = memo(function ChatInputArea({
   // Extended thinking (reasoning) toggle
   const [thinkingEnabled, setThinkingEnabled] = useAtom(extendedThinkingEnabledAtom)
 
+  // MCP status - from getAllMcpConfig query (provides global/local grouping)
+  const setSettingsOpen = useSetAtom(agentsSettingsDialogOpenAtom)
+  const setSettingsTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
+
+  const {
+    data: allMcpConfig,
+    isLoading: isMcpLoading,
+    refetch: refetchMcp,
+  } = trpc.claude.getAllMcpConfig.useQuery(undefined, {
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const [isMcpRefreshing, setIsMcpRefreshing] = useState(false)
+  const isMcpBusy = isMcpLoading || isMcpRefreshing
+
+  const handleRefreshMcp = useCallback(async () => {
+    setIsMcpRefreshing(true)
+    try {
+      await refetchMcp()
+    } finally {
+      setIsMcpRefreshing(false)
+    }
+  }, [refetchMcp])
+
+  // Extract global MCPs and project-specific MCPs
+  const mcpGroups = useMemo(() => {
+    if (!allMcpConfig?.groups) return { global: [], local: [] }
+
+    const globalGroup = allMcpConfig.groups.find((g) => g.groupName === "Global")
+    const localGroup = allMcpConfig.groups.find(
+      (g) => g.projectPath && projectPath && g.projectPath === projectPath,
+    )
+
+    return {
+      global: globalGroup?.mcpServers || [],
+      local: localGroup?.mcpServers || [],
+    }
+  }, [allMcpConfig?.groups, projectPath])
+
+  const totalMcps = mcpGroups.global.length + mcpGroups.local.length
+  const connectedMcps =
+    mcpGroups.global.filter((s) => s.status === "connected").length +
+    mcpGroups.local.filter((s) => s.status === "connected").length
+
+  const handleOpenMcpSettings = useCallback(() => {
+    setSettingsTab("mcp")
+    setSettingsOpen(true)
+  }, [setSettingsTab, setSettingsOpen])
+
   // Auto-switch model based on network status (only if offline features enabled)
   // Note: When offline, we show Ollama models selector instead of Claude models
   // The selectedOllamaModel atom is used to track which Ollama model is selected
 
-  // Plan mode - global atom
-  const [isPlanMode, setIsPlanMode] = useAtom(isPlanModeAtom)
+  // Plan mode - per-subChat using atomFamily
+  const subChatModeAtom = useMemo(
+    () => subChatModeAtomFamily(subChatId),
+    [subChatId],
+  )
+  const [subChatMode, setSubChatMode] = useAtom(subChatModeAtom)
+
+  // Helper to update mode (atomFamily + Zustand store sync)
+  const updateMode = useCallback((newMode: AgentMode) => {
+    setSubChatMode(newMode)
+    useAgentSubChatStore.getState().updateSubChatMode(subChatId, newMode)
+  }, [setSubChatMode, subChatId])
+
+  // Toggle mode helper
+  const toggleMode = useCallback(() => {
+    updateMode(getNextMode(subChatMode))
+  }, [subChatMode, updateMode])
+
+  // Voice input state
+  const {
+    isRecording: isVoiceRecording,
+    audioLevel: voiceAudioLevel,
+    startRecording: startVoiceRecording,
+    stopRecording: stopVoiceRecording,
+    cancelRecording: cancelVoiceRecording,
+  } = useVoiceRecording()
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const voiceMountedRef = useRef(true)
+
+  useEffect(() => {
+    voiceMountedRef.current = true
+    return () => {
+      voiceMountedRef.current = false
+    }
+  }, [])
+
+  const transcribeMutation = trpc.voice.transcribe.useMutation()
+
+  // Check if voice input is available (authenticated OR has OPENAI_API_KEY)
+  const { data: voiceAvailability } = trpc.voice.isAvailable.useQuery()
+  const isVoiceAvailable = voiceAvailability?.available ?? false
+
+  // Get resolved voice input hotkey
+  const customHotkeys = useAtomValue(customHotkeysAtom)
+  const voiceInputHotkey = getResolvedHotkey("voice-input", customHotkeys)
 
   // Refs for draft saving
   const currentSubChatIdRef = useRef<string>(subChatId)
@@ -431,6 +563,168 @@ export const ChatInputArea = memo(function ChatInputArea({
     window.addEventListener("keydown", handleKeyDown, true)
     return () => window.removeEventListener("keydown", handleKeyDown, true)
   }, [hasCustomClaudeConfig])
+
+  // Voice input handlers
+  const handleVoiceMouseDown = useCallback(async () => {
+    if (isStreaming || isTranscribing || isVoiceRecording) return
+    try {
+      await startVoiceRecording()
+    } catch (err) {
+      console.error("[VoiceInput] Failed to start recording:", err)
+    }
+  }, [isStreaming, isTranscribing, isVoiceRecording, startVoiceRecording])
+
+  const handleVoiceMouseUp = useCallback(async () => {
+    if (!isVoiceRecording) return
+
+    try {
+      const blob = await stopVoiceRecording()
+
+      // Don't transcribe very short recordings (likely accidental clicks)
+      if (blob.size < 1000) {
+        console.log("[VoiceInput] Recording too short, ignoring")
+        return
+      }
+
+      if (!voiceMountedRef.current) return
+
+      setIsTranscribing(true)
+
+      const base64 = await blobToBase64(blob)
+      const format = getAudioFormat(blob.type)
+
+      const result = await transcribeMutation.mutateAsync({
+        audio: base64,
+        format,
+      })
+
+      if (!voiceMountedRef.current) return
+
+      if (result.text && result.text.trim()) {
+        // Insert transcribed text into editor
+        // Clean both current value and transcribed text
+        const currentRaw = editorRef.current?.getValue() || ""
+        const current = currentRaw.replace(/[\r\n\t]+/g, " ").replace(/ +/g, " ").trim()
+        const transcribed = result.text
+          .replace(/[\r\n\t]+/g, " ")
+          .replace(/ +/g, " ")
+          .trim()
+        // Add space separator only if current text exists and doesn't end with whitespace
+        const needsSpace = current.length > 0 && !/\s$/.test(current)
+        const newValue = current + (needsSpace ? " " : "") + transcribed
+        editorRef.current?.setValue(newValue)
+        editorRef.current?.focus()
+      }
+    } catch (err) {
+      console.error("[VoiceInput] Transcription failed:", err)
+    } finally {
+      if (voiceMountedRef.current) {
+        setIsTranscribing(false)
+      }
+    }
+  }, [isVoiceRecording, stopVoiceRecording, transcribeMutation, editorRef])
+
+  const handleVoiceMouseLeave = useCallback(() => {
+    if (isVoiceRecording) {
+      // Cancel instead of transcribing when leaving button area
+      cancelVoiceRecording()
+    }
+  }, [isVoiceRecording, cancelVoiceRecording])
+
+  // Keyboard shortcut: Voice input hotkey (push-to-talk: hold to record, release to transcribe)
+  useEffect(() => {
+    if (!voiceInputHotkey) return
+
+    // Parse hotkey once
+    const parts = voiceInputHotkey.split("+").map(p => p.toLowerCase())
+    const modifiers = parts.filter(p => ["cmd", "meta", "ctrl", "opt", "alt", "shift"].includes(p))
+    const mainKey = parts.find(p => !["cmd", "meta", "ctrl", "opt", "alt", "shift"].includes(p))
+
+    const needsCmd = modifiers.includes("cmd") || modifiers.includes("meta")
+    const needsShift = modifiers.includes("shift")
+    const needsCtrl = modifiers.includes("ctrl")
+    const needsAlt = modifiers.includes("alt") || modifiers.includes("opt")
+
+    // For modifier-only hotkeys (like ctrl+opt), we track when all modifiers are pressed
+    const isModifierOnlyHotkey = !mainKey
+
+    const modifiersMatch = (e: KeyboardEvent) => {
+      return (
+        e.metaKey === needsCmd &&
+        e.shiftKey === needsShift &&
+        e.ctrlKey === needsCtrl &&
+        e.altKey === needsAlt
+      )
+    }
+
+    const matchesHotkey = (e: KeyboardEvent) => {
+      if (isModifierOnlyHotkey) {
+        // For modifier-only: just check if all required modifiers are pressed
+        return modifiersMatch(e)
+      }
+
+      // For regular hotkey with main key
+      const keyMatches =
+        e.key.toLowerCase() === mainKey ||
+        e.code.toLowerCase() === mainKey ||
+        e.code.toLowerCase() === `key${mainKey}` ||
+        (mainKey === "space" && e.code === "Space")
+
+      return keyMatches && modifiersMatch(e)
+    }
+
+    // Check if any modifier key is released
+    const isModifierRelease = (e: KeyboardEvent) => {
+      const key = e.key.toLowerCase()
+      return key === "control" || key === "alt" || key === "meta" || key === "shift"
+    }
+
+    // Check if the released key is the main key (not a modifier)
+    const isMainKeyRelease = (e: KeyboardEvent) => {
+      if (isModifierOnlyHotkey) {
+        return isModifierRelease(e)
+      }
+      const eventKey = e.key.toLowerCase()
+      return (
+        eventKey === mainKey ||
+        e.code.toLowerCase() === mainKey ||
+        e.code.toLowerCase() === `key${mainKey}` ||
+        (mainKey === "space" && e.code === "Space")
+      )
+    }
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (!matchesHotkey(e)) return
+      if (e.repeat) return // Ignore key repeat
+
+      e.preventDefault()
+      e.stopPropagation()
+
+      // Start recording on keydown
+      if (!isVoiceRecording && !isTranscribing && !isStreaming) {
+        handleVoiceMouseDown()
+      }
+    }
+
+    const handleKeyUp = (e: KeyboardEvent) => {
+      // Stop recording when the main key (or any modifier for modifier-only hotkeys) is released
+      if (!isMainKeyRelease(e)) return
+
+      // Only stop if we're currently recording
+      if (isVoiceRecording) {
+        e.preventDefault()
+        e.stopPropagation()
+        handleVoiceMouseUp()
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown, true)
+    window.addEventListener("keyup", handleKeyUp, true)
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true)
+      window.removeEventListener("keyup", handleKeyUp, true)
+    }
+  }, [voiceInputHotkey, isVoiceRecording, isTranscribing, isStreaming, handleVoiceMouseDown, handleVoiceMouseUp])
 
   // Save draft on blur (with attachments and text contexts)
   const handleEditorBlur = useCallback(async () => {
@@ -540,7 +834,7 @@ export const ChatInputArea = memo(function ChatInputArea({
       editorRef.current?.clearSlashCommand()
       setShowSlashDropdown(false)
 
-      // Handle builtin commands
+      // Handle builtin commands that change app state (no text input needed)
       if (command.category === "builtin") {
         switch (command.name) {
           case "clear":
@@ -548,51 +842,29 @@ export const ChatInputArea = memo(function ChatInputArea({
             if (onCreateNewSubChat) {
               onCreateNewSubChat()
             }
-            break
+            return
           case "plan":
-            if (!isPlanMode) {
-              setIsPlanMode(true)
+            if (subChatMode !== "plan") {
+              updateMode("plan")
             }
-            break
+            return
           case "agent":
-            if (isPlanMode) {
-              setIsPlanMode(false)
+            if (subChatMode === "plan") {
+              updateMode("agent")
             }
-            break
+            return
           case "compact":
             // Trigger context compaction
             onCompact()
-            break
-          // Prompt-based commands - auto-send to agent
-          case "review":
-          case "pr-comments":
-          case "release-notes":
-          case "security-review":
-          case "commit": {
-            const prompt =
-              COMMAND_PROMPTS[command.name as keyof typeof COMMAND_PROMPTS]
-            if (prompt) {
-              editorRef.current?.setValue(prompt)
-              // Auto-send the prompt to agent
-              setTimeout(() => onSend(), 0)
-            }
-            break
-          }
+            return
         }
-        return
       }
 
-      // Handle custom commands
-      if (command.argumentHint) {
-        // Command expects arguments - insert command and let user add args
-        editorRef.current?.setValue(`/${command.name} `)
-      } else if (command.prompt) {
-        // Command without arguments - send immediately
-        editorRef.current?.setValue(command.prompt)
-        setTimeout(() => onSend(), 0)
-      }
+      // For all other commands (builtin prompts and custom):
+      // insert the command and let user add arguments or press Enter to send
+      editorRef.current?.setValue(`/${command.name} `)
     },
-    [isPlanMode, setIsPlanMode, onSend, onCreateNewSubChat, onCompact, editorRef],
+    [subChatMode, updateMode, onCreateNewSubChat, onCompact, editorRef],
   )
 
   // Paste handler for images, plain text, and large text (saved as files)
@@ -612,12 +884,124 @@ export const ChatInputArea = memo(function ChatInputArea({
     setIsDragOver(false)
   }, [])
 
+  // Text file extensions that should have content read and attached
+  const TEXT_FILE_EXTENSIONS = new Set([
+    // Code
+    ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+    ".py", ".rb", ".go", ".rs", ".java", ".kt", ".swift", ".c", ".cpp", ".h", ".hpp",
+    ".cs", ".php", ".lua", ".r", ".m", ".mm", ".scala", ".clj", ".ex", ".exs",
+    ".hs", ".elm", ".erl", ".fs", ".fsx", ".ml", ".v", ".vhdl", ".zig",
+    // Config/Data
+    ".json", ".yaml", ".yml", ".toml", ".xml", ".ini", ".env", ".conf", ".cfg",
+    ".properties", ".plist",
+    // Web
+    ".html", ".htm", ".css", ".scss", ".sass", ".less", ".vue", ".svelte", ".astro",
+    // Documentation
+    ".md", ".mdx", ".rst", ".txt", ".text",
+    // Graphics (text-based)
+    ".svg",
+    // Shell/Scripts
+    ".sh", ".bash", ".zsh", ".fish", ".ps1", ".bat", ".cmd",
+    // Other
+    ".sql", ".graphql", ".gql", ".prisma", ".dockerfile", ".makefile",
+    ".gitignore", ".gitattributes", ".editorconfig", ".eslintrc", ".prettierrc",
+  ])
+
+  const MAX_FILE_SIZE_FOR_CONTENT = 100 * 1024 // 100KB - files larger than this only get path mention
+
+  // Image extensions that should be handled as attachments (base64)
+  const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"])
+
+  const trpcUtils = trpc.useUtils()
+
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault()
       setIsDragOver(false)
       const droppedFiles = Array.from(e.dataTransfer.files)
-      onAddAttachments(droppedFiles)
+
+      // Separate images from other files
+      const imageFiles: File[] = []
+      const otherFiles: File[] = []
+
+      for (const file of droppedFiles) {
+        const ext = file.name.includes(".") ? "." + file.name.split(".").pop()?.toLowerCase() : ""
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          imageFiles.push(file)
+        } else {
+          otherFiles.push(file)
+        }
+      }
+
+      // Handle images via existing attachment system (base64)
+      if (imageFiles.length > 0) {
+        onAddAttachments(imageFiles)
+      }
+
+      // Process other files - for text files, read content and add as file mention
+      for (const file of otherFiles) {
+        // Get file path using Electron's webUtils API (more reliable than file.path)
+        // @ts-expect-error - Electron's webUtils API
+        const filePath: string | undefined = window.webUtils?.getPathForFile?.(file) || (file as File & { path?: string }).path
+
+        let mentionId: string
+        let mentionPath: string
+
+        if (projectPath && filePath && filePath.startsWith(projectPath)) {
+          // File is inside project - use relative path
+          const relativePath = filePath.slice(projectPath.length).replace(/^\//, "")
+          mentionId = `file:local:${relativePath}`
+          mentionPath = relativePath
+        } else if (filePath) {
+          // External file - use absolute path
+          mentionId = `file:external:${filePath}`
+          mentionPath = filePath
+        } else {
+          // No path available (shouldn't happen in Electron) - use filename
+          mentionId = `file:external:${file.name}`
+          mentionPath = file.name
+        }
+
+        const fileName = file.name
+        const ext = fileName.includes(".") ? "." + fileName.split(".").pop()?.toLowerCase() : ""
+        // Files without extension are likely directories or special files - skip content reading
+        const hasExtension = ext !== ""
+        const isTextFile = hasExtension && TEXT_FILE_EXTENSIONS.has(ext)
+        const isSmallEnough = file.size <= MAX_FILE_SIZE_FOR_CONTENT
+
+        // For text files that are small enough, read content and cache it
+        // Show file chip, content will be added to prompt on send
+        if (isTextFile && isSmallEnough && filePath) {
+          // Add file chip for visual representation
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+
+          // Read and cache content (will be added to prompt on send)
+          try {
+            const content = await trpcUtils.files.readFile.fetch({ filePath })
+            onCacheFileContent?.(mentionId, content)
+          } catch (err) {
+            // If reading fails, chip is still there - agent can try to read via path
+            console.error(`[handleDrop] Failed to read file content ${filePath}:`, err)
+          }
+        } else {
+          // For binary files, large files - add as mention only
+          // mentionPath contains full absolute path for external files
+          editorRef.current?.insertMention({
+            id: mentionId,
+            label: fileName,
+            path: mentionPath,
+            repository: "local",
+            type: "file",
+          })
+        }
+      }
+
       // Focus after state update - use double rAF to wait for React render
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
@@ -625,7 +1009,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         })
       })
     },
-    [onAddAttachments, editorRef],
+    [editorRef, projectPath, onCacheFileContent, onAddAttachments, trpcUtils],
   )
 
   return (
@@ -744,7 +1128,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                   onContentChange={handleContentChange}
                   onSubmit={onSubmitWithQuestionAnswer || handleEditorSubmit}
                   onForceSubmit={onForceSend}
-                  onShiftTab={() => setIsPlanMode((prev) => !prev)}
+                  onShiftTab={toggleMode}
                   placeholder={isStreaming ? "Add to the queue" : "Plan, @ for context, / for commands"}
                   className={cn(
                     "bg-transparent max-h-[200px] overflow-y-auto p-1",
@@ -774,12 +1158,12 @@ export const ChatInputArea = memo(function ChatInputArea({
                   >
                     <DropdownMenuTrigger asChild>
                       <button className="flex items-center gap-1.5 px-2 py-1 text-sm text-muted-foreground hover:text-foreground transition-colors rounded-md hover:bg-muted/50 outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70">
-                        {isPlanMode ? (
+                        {subChatMode === "plan" ? (
                           <PlanIcon className="h-3.5 w-3.5 shrink-0" />
                         ) : (
                           <AgentIcon className="h-3.5 w-3.5 shrink-0" />
                         )}
-                        <span className="truncate">{isPlanMode ? "Plan" : "Agent"}</span>
+                        <span className="truncate">{subChatMode === "plan" ? "Plan" : "Agent"}</span>
                         <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
                       </button>
                     </DropdownMenuTrigger>
@@ -797,7 +1181,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                             tooltipTimeoutRef.current = null
                           }
                           setModeTooltip(null)
-                          setIsPlanMode(false)
+                          updateMode("agent")
                           setModeDropdownOpen(false)
                         }}
                         className="justify-between gap-2"
@@ -840,7 +1224,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                           <AgentIcon className="w-4 h-4 text-muted-foreground" />
                           <span>Agent</span>
                         </div>
-                        {!isPlanMode && (
+                        {subChatMode !== "plan" && (
                           <CheckIcon className="h-3.5 w-3.5 ml-auto shrink-0" />
                         )}
                       </DropdownMenuItem>
@@ -852,7 +1236,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                             tooltipTimeoutRef.current = null
                           }
                           setModeTooltip(null)
-                          setIsPlanMode(true)
+                          updateMode("plan")
                           setModeDropdownOpen(false)
                         }}
                         className="justify-between gap-2"
@@ -895,7 +1279,7 @@ export const ChatInputArea = memo(function ChatInputArea({
                           <PlanIcon className="w-4 h-4 text-muted-foreground" />
                           <span>Plan</span>
                         </div>
-                        {isPlanMode && (
+                        {subChatMode === "plan" && (
                           <CheckIcon className="h-3.5 w-3.5 ml-auto shrink-0" />
                         )}
                       </DropdownMenuItem>
@@ -1048,15 +1432,15 @@ export const ChatInputArea = memo(function ChatInputArea({
                       </DropdownMenuContent>
                     </DropdownMenu>
                   )}
+
                 </div>
 
                 <div className="flex items-center gap-0.5 ml-auto flex-shrink-0">
-                  {/* Hidden file input - accepts images and text/code files */}
+                  {/* Hidden file input - accepts any files */}
                   <input
                     type="file"
                     ref={fileInputRef}
                     hidden
-                    accept="image/jpeg,image/png,.txt,.md,.markdown,.json,.yaml,.yml,.xml,.csv,.tsv,.log,.ini,.cfg,.conf,.js,.ts,.jsx,.tsx,.py,.rb,.go,.rs,.java,.kt,.swift,.c,.cpp,.h,.hpp,.cs,.php,.html,.css,.scss,.sass,.less,.sql,.sh,.bash,.zsh,.ps1,.bat,.env,.gitignore,.dockerignore,.editorconfig,.prettierrc,.eslintrc,.babelrc,.nvmrc,.pdf"
                     multiple
                     onChange={(e) => {
                       const inputFiles = Array.from(e.target.files || [])
@@ -1065,26 +1449,33 @@ export const ChatInputArea = memo(function ChatInputArea({
                     }}
                   />
 
-                  {/* Context window indicator - click to compact */}
-                  <AgentContextIndicator
-                    tokenData={messageTokenData}
-                    onCompact={onCompact}
-                    isCompacting={isCompacting}
-                    disabled={isStreaming}
-                  />
+                  {/* Voice wave indicator - shown during recording */}
+                  {isVoiceRecording ? (
+                    <VoiceWaveIndicator isRecording={isVoiceRecording} audioLevel={voiceAudioLevel} />
+                  ) : (
+                    <>
+                      {/* Context window indicator - click to compact */}
+                      <AgentContextIndicator
+                        tokenData={messageTokenData}
+                        onCompact={onCompact}
+                        isCompacting={isCompacting}
+                        disabled={isStreaming}
+                      />
 
-                  {/* Attachment button */}
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={images.length >= 5 && files.length >= 10}
-                  >
-                    <AttachIcon className="h-4 w-4" />
-                  </Button>
+                      {/* Attachment button */}
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-7 w-7 rounded-sm outline-offset-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={images.length >= 5 && files.length >= 10}
+                      >
+                        <AttachIcon className="h-4 w-4" />
+                      </Button>
+                    </>
+                  )}
 
-                  {/* Send/Stop button */}
+                  {/* Send/Stop/Voice button */}
                   <div className="ml-1">
                     <AgentSendButton
                       isStreaming={isStreaming}
@@ -1108,7 +1499,14 @@ export const ChatInputArea = memo(function ChatInputArea({
                         }
                       }}
                       onStop={onStop}
-                      isPlanMode={isPlanMode}
+                      mode={subChatMode}
+                      // Voice input props - show mic when input is empty and voice is available
+                      showVoiceInput={isVoiceAvailable}
+                      isRecording={isVoiceRecording}
+                      isTranscribing={isTranscribing}
+                      onVoiceMouseDown={handleVoiceMouseDown}
+                      onVoiceMouseUp={handleVoiceMouseUp}
+                      onVoiceMouseLeave={handleVoiceMouseLeave}
                     />
                   </div>
                 </div>
@@ -1156,7 +1554,7 @@ export const ChatInputArea = memo(function ChatInputArea({
         searchText={slashSearchText}
         position={slashPosition}
         projectPath={projectPath}
-        isPlanMode={isPlanMode}
+        mode={subChatMode}
       />
     </div>
   )

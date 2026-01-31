@@ -13,6 +13,7 @@ export type ShortcutActionId =
   | "search-workspaces"
   | "archive-workspace"
   | "quick-switch-workspaces"
+  | "open-kanban"
   // Agents
   | "new-agent"
   | "search-chats"
@@ -28,6 +29,10 @@ export type ShortcutActionId =
   | "toggle-terminal"
   | "open-diff"
   | "create-pr"
+  | "file-search"
+  | "voice-input"
+  | "open-in-editor"
+  | "open-file-in-editor"
 
 /**
  * Category for organizing shortcuts in the UI

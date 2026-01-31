@@ -16,6 +16,7 @@ import {
   justCreatedIdsAtom,
   pendingUserQuestionsAtom,
   undoStackAtom,
+  subChatModeAtomFamily,
   type UndoItem,
 } from "../agents/atoms"
 import {
@@ -28,8 +29,11 @@ import {
   selectedSubChatsCountAtom,
   isDesktopAtom,
   isFullscreenAtom,
+  chatSourceModeAtom,
+  defaultAgentModeAtom,
 } from "../../lib/atoms"
 import { trpc } from "../../lib/trpc"
+import { appStore } from "../../lib/jotai-store"
 import {
   useAgentSubChatStore,
   type SubChatMeta,
@@ -54,6 +58,7 @@ import {
 } from "../../components/ui/tooltip"
 import { Kbd } from "../../components/ui/kbd"
 import { isDesktopApp, getShortcutKey } from "../../lib/utils/platform"
+import { useResolvedHotkeyDisplay } from "../../lib/hotkeys"
 import { TrafficLightSpacer } from "../agents/components/traffic-light-spacer"
 import { PopoverTrigger } from "../../components/ui/popover"
 import { AlignJustify } from "lucide-react"
@@ -255,8 +260,12 @@ export function AgentsSubChatsSidebar({
   })
   const subChatUnseenChanges = useAtomValue(agentsSubChatUnseenChangesAtom)
   const setSubChatUnseenChanges = useSetAtom(agentsSubChatUnseenChangesAtom)
+
+  // Resolved hotkey for tooltip
+  const newAgentHotkey = useResolvedHotkeyDisplay("new-agent")
   const [justCreatedIds, setJustCreatedIds] = useAtom(justCreatedIdsAtom)
   const pendingQuestionsMap = useAtomValue(pendingUserQuestionsAtom)
+  const defaultAgentMode = useAtomValue(defaultAgentModeAtom)
 
   // Pending plan approvals from DB - only for open sub-chats
   const { data: pendingPlanApprovalsData } = trpc.chats.getPendingPlanApprovals.useQuery(
@@ -306,6 +315,9 @@ export function AgentsSubChatsSidebar({
   // Global desktop/fullscreen state from atoms (initialized in AgentsLayout)
   const isDesktop = useAtomValue(isDesktopAtom)
   const isFullscreen = useAtomValue(isFullscreenAtom)
+
+  // Chat source mode: "local" or "sandbox"
+  const chatSourceMode = useAtomValue(chatSourceModeAtom)
 
   // Map open IDs to metadata and sort by updated_at (most recent first)
   const openSubChats = useMemo(() => {
@@ -653,23 +665,34 @@ export function AgentsSubChatsSidebar({
 
     const store = useAgentSubChatStore.getState()
 
-    // Create sub-chat in DB first to get the real ID
-    const newSubChat = await trpcClient.chats.createSubChat.mutate({
-      chatId: parentChatId,
-      name: "New Chat",
-      mode: "agent",
-    })
-    const newId = newSubChat.id
+    let newId: string
+
+    if (chatSourceMode === "sandbox") {
+      // Sandbox mode: lazy creation (web app pattern)
+      // Sub-chat will be persisted on first message via RemoteChatTransport UPSERT
+      newId = crypto.randomUUID()
+    } else {
+      // Local mode: create sub-chat in DB first to get the real ID
+      const newSubChat = await trpcClient.chats.createSubChat.mutate({
+        chatId: parentChatId,
+        name: "New Chat",
+        mode: defaultAgentMode,
+      })
+      newId = newSubChat.id
+    }
 
     // Track this subchat as just created for typewriter effect
     setJustCreatedIds((prev) => new Set([...prev, newId]))
+
+    // Initialize atomFamily mode for the new sub-chat
+    appStore.set(subChatModeAtomFamily(newId), defaultAgentMode)
 
     // Add to allSubChats with placeholder name
     store.addToAllSubChats({
       id: newId,
       name: "New Chat",
       created_at: new Date().toISOString(),
-      mode: "agent",
+      mode: defaultAgentMode,
     })
 
     // Add to open tabs and set as active
@@ -1128,7 +1151,7 @@ export function AgentsSubChatsSidebar({
               </TooltipTrigger>
             <TooltipContent side="right">
               Create a new chat
-              <Kbd>{getShortcutKey("newTab")}</Kbd>
+              {newAgentHotkey && <Kbd>{newAgentHotkey}</Kbd>}
             </TooltipContent>
           </Tooltip>
           </div>

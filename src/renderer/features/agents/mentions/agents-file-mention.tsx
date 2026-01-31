@@ -85,6 +85,11 @@ import {
   SvelteIcon,
   AstroIcon,
   SwiftIcon,
+  PDFIcon,
+  SVGIcon,
+  TxtIcon,
+  GitIcon,
+  NpmIcon,
 } from "../../../icons/framework-icons"
 
 interface ChangedFile {
@@ -170,6 +175,9 @@ const KNOWN_FILE_ICON_EXTENSIONS = new Set([
   "svelte",
   "astro",
   "swift",
+  "pdf",
+  "svg",
+  "txt",
 ])
 
 // Get file icon component based on file extension
@@ -185,9 +193,19 @@ export function getFileIconByExtension(
     return DockerIcon
   }
 
-  // Special handling for .env files
-  // Get the base filename (without path)
+  // Special handling for dotfiles
   const baseFilename = filenameLower.split("/").pop() || filenameLower
+  if (baseFilename === ".gitignore") {
+    return GitIcon
+  }
+  if (baseFilename === ".npmrc") {
+    return NpmIcon
+  }
+  if (baseFilename === ".prettierrc") {
+    return JSONIcon
+  }
+
+  // Special handling for .env files
   // .env (without suffix) -> TOML icon
   // .env.local, .env.example, .env.development, etc. -> Shell icon
   if (baseFilename === ".env") {
@@ -308,6 +326,12 @@ export function getFileIconByExtension(
       return AstroIcon
     case "swift":
       return SwiftIcon
+    case "pdf":
+      return PDFIcon
+    case "svg":
+      return SVGIcon
+    case "txt":
+      return TxtIcon
     default:
       return returnNullForUnknown ? null : FilesIcon
   }
@@ -687,16 +711,22 @@ export const AgentsFileMention = memo(function AgentsFileMention({
   const sessionInfo = useAtomValue(sessionInfoAtom)
 
   // Fetch skills from filesystem (cached for 5 minutes)
-  const { data: skills = [], isFetching: isFetchingSkills } = trpc.skills.listEnabled.useQuery(undefined, {
-    enabled: isOpen,
-    staleTime: 5 * 60 * 1000, // 5 minutes - skills don't change frequently
-  })
+  const { data: skills = [], isFetching: isFetchingSkills } = trpc.skills.listEnabled.useQuery(
+    projectPath ? { cwd: projectPath } : undefined,
+    {
+      enabled: isOpen,
+      staleTime: 5 * 60 * 1000, // 5 minutes - skills don't change frequently
+    },
+  )
 
   // Fetch custom agents from filesystem (cached for 5 minutes)
-  const { data: customAgents = [], isFetching: isFetchingAgents } = trpc.agents.listEnabled.useQuery(undefined, {
-    enabled: isOpen,
-    staleTime: 5 * 60 * 1000, // 5 minutes - agents don't change frequently
-  })
+  const { data: customAgents = [], isFetching: isFetchingAgents } = trpc.agents.listEnabled.useQuery(
+    projectPath ? { cwd: projectPath } : undefined,
+    {
+      enabled: isOpen,
+      staleTime: 5 * 60 * 1000, // 5 minutes - agents don't change frequently
+    },
+  )
 
   // Debounce search text (300ms to match canvas implementation)
   useEffect(() => {
@@ -752,14 +782,16 @@ export const AgentsFileMention = memo(function AgentsFileMention({
         matchesMultiWordSearch(file.filePath, searchLower),
       )
       .map((file) => {
-        const pathParts = file.filePath.split("/")
-        const fileName = pathParts.pop() || file.filePath
+        // Use displayPath (relative path) for UI display, filePath only for internal ID
+        const displayPath = file.displayPath || file.filePath
+        const pathParts = displayPath.split("/")
+        const fileName = pathParts.pop() || displayPath
         const dirPath = pathParts.join("/") || "/"
 
         return {
           id: `changed:${file.filePath}`,
           label: fileName,
-          path: file.filePath,
+          path: displayPath,
           repository: repository || "",
           truncatedPath: dirPath,
           additions: file.additions,
