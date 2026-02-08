@@ -189,6 +189,7 @@ export type SettingsTab =
   | "skills"
   | "agents"
   | "mcp"
+  | "plugins"
   | "worktrees"
   | "projects"
   | "debug"
@@ -363,7 +364,7 @@ export const activeConfigAtom = atom((get) => {
 // Note: Extended thinking disables response streaming
 export const extendedThinkingEnabledAtom = atomWithStorage<boolean>(
   "preferences:extended-thinking-enabled",
-  false,
+  true,
   undefined,
   { getOnInit: true },
 )
@@ -372,7 +373,7 @@ export const extendedThinkingEnabledAtom = atomWithStorage<boolean>(
 // When enabled, allow rollback to previous assistant messages
 export const historyEnabledAtom = atomWithStorage<boolean>(
   "preferences:history-enabled",
-  false,
+  false, // Default OFF — beta feature
   undefined,
   { getOnInit: true },
 )
@@ -425,11 +426,11 @@ export const betaGitFeaturesEnabledAtom = atomWithStorage<boolean>(
   { getOnInit: true },
 )
 
-// Beta: Enable Kanban board view
+// Kanban board view
 // When enabled, shows Kanban button in sidebar to view workspaces as a board
 export const betaKanbanEnabledAtom = atomWithStorage<boolean>(
   "preferences:beta-kanban-enabled",
-  false, // Default OFF
+  true, // Default ON — graduated from beta
   undefined,
   { getOnInit: true },
 )
@@ -448,6 +449,15 @@ export const betaAutomationsEnabledAtom = atomWithStorage<boolean>(
 export const enableTasksAtom = atomWithStorage<boolean>(
   "preferences:enable-tasks",
   true, // Default ON
+  undefined,
+  { getOnInit: true },
+)
+
+// Beta: Enable Early Access Updates
+// When enabled, the app checks for beta releases in addition to stable releases
+export const betaUpdatesEnabledAtom = atomWithStorage<boolean>(
+  "preferences:beta-updates-enabled",
+  false, // Default OFF - only stable releases
   undefined,
   { getOnInit: true },
 )
@@ -819,3 +829,20 @@ export const preferredEditorAtom = atomWithStorage<ExternalApp>(
   undefined,
   { getOnInit: true },
 )
+
+// ============================================
+// MCP APPROVAL DIALOG ATOMS
+// ============================================
+
+export type PendingMcpApproval = {
+  pluginSource: string
+  serverName: string
+  identifier: string
+  config: Record<string, unknown>
+}
+
+// Whether the MCP approval dialog is open
+export const mcpApprovalDialogOpenAtom = atom<boolean>(false)
+
+// Pending MCP approvals to show in the dialog
+export const pendingMcpApprovalsAtom = atom<PendingMcpApproval[]>([])

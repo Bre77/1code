@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react"
-import { useSetAtom } from "jotai"
+import { useListKeyboardNav } from "./use-list-keyboard-nav"
+import { useAtomValue, useSetAtom } from "jotai"
 import { trpc } from "../../../lib/trpc"
 import { Button, buttonVariants } from "../../ui/button"
 import { Input } from "../../ui/input"
@@ -584,6 +585,7 @@ function ProjectDetail({ projectId }: { projectId: string }) {
 
 // --- Main Two-Panel Component ---
 export function AgentsProjectsTab() {
+  const selectedProject = useAtomValue(selectedProjectAtom)
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const searchInputRef = useRef<HTMLInputElement>(null)
@@ -625,6 +627,17 @@ export function AgentsProjectsTab() {
     )
   }, [projects, searchQuery])
 
+  const allProjectIds = useMemo(
+    () => filteredProjects.map((p) => p.id),
+    [filteredProjects]
+  )
+
+  const { containerRef: listRef, onKeyDown: listKeyDown } = useListKeyboardNav({
+    items: allProjectIds,
+    selectedItem: selectedProjectId,
+    onSelect: setSelectedProjectId,
+  })
+
   // Auto-select first project
   useEffect(() => {
     if (selectedProjectId || isLoading) return
@@ -632,6 +645,12 @@ export function AgentsProjectsTab() {
       setSelectedProjectId(projects[0]!.id)
     }
   }, [projects, selectedProjectId, isLoading])
+
+  // Sync selection from global selectedProject (e.g., toast action)
+  useEffect(() => {
+    if (!selectedProject?.id) return
+    setSelectedProjectId(selectedProject.id)
+  }, [selectedProject?.id])
 
   return (
     <div className="flex h-full overflow-hidden">
@@ -656,6 +675,7 @@ export function AgentsProjectsTab() {
               placeholder="Search projects..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={listKeyDown}
               className="h-7 w-full rounded-lg text-sm bg-muted border border-input px-3 placeholder:text-muted-foreground/40 outline-none"
             />
             <button
@@ -668,13 +688,13 @@ export function AgentsProjectsTab() {
           </div>
 
           {/* Project list */}
-          <div className="flex-1 overflow-y-auto px-2 pt-2 pb-2">
+          <div ref={listRef} onKeyDown={listKeyDown} tabIndex={-1} className="flex-1 overflow-y-auto px-2 pt-2 pb-2 outline-none">
             {isLoading ? (
               <div className="flex items-center justify-center h-full">
                 <FolderFilledIcon className="h-5 w-5 text-muted-foreground animate-pulse" />
               </div>
             ) : !projects || projects.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+              <div className="flex flex-col items-center justify-center h-full text-center px-4">
                 <FolderFilledIcon className="h-8 w-8 text-border mb-3" />
                 <p className="text-sm text-muted-foreground mb-1">No projects</p>
                 <button
@@ -695,9 +715,10 @@ export function AgentsProjectsTab() {
                   return (
                     <button
                       key={project.id}
+                      data-item-id={project.id}
                       onClick={() => setSelectedProjectId(project.id)}
                       className={cn(
-                        "w-full text-left py-1.5 px-2 rounded-md transition-colors duration-150 cursor-pointer",
+                        "w-full text-left py-1.5 px-2 rounded-md transition-colors duration-150 cursor-pointer outline-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-ring/70 focus-visible:-outline-offset-2",
                         isSelected
                           ? "bg-foreground/5 text-foreground"
                           : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -705,7 +726,7 @@ export function AgentsProjectsTab() {
                     >
                       <div className="flex items-center gap-2">
                         <ProjectIcon project={project} className="h-4 w-4" />
-                        <span className={cn("text-sm truncate flex-1", isSelected && "font-medium")}>
+                        <span className="text-sm truncate flex-1">
                           {project.name}
                         </span>
                       </div>

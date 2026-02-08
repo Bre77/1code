@@ -7,6 +7,7 @@ import {
   clipboard,
   session,
   nativeImage,
+  dialog,
 } from "electron"
 import { join } from "path"
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "fs"
@@ -244,6 +245,43 @@ function registerIpcHandlers(): void {
     clipboard.writeText(text),
   )
   ipcMain.handle("clipboard:read", () => clipboard.readText())
+
+  // Save file with native dialog
+  ipcMain.handle(
+    "dialog:save-file",
+    async (
+      event,
+      options: { base64Data: string; filename: string; filters?: { name: string; extensions: string[] }[] },
+    ) => {
+      const win = getWindowFromEvent(event)
+      if (!win) return { success: false }
+
+      // Ensure window is focused before showing dialog (required on macOS)
+      if (!win.isFocused()) {
+        win.focus()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+      }
+
+      const result = await dialog.showSaveDialog(win, {
+        defaultPath: options.filename,
+        filters: options.filters || [
+          { name: "Images", extensions: ["png", "jpg", "jpeg", "webp", "gif"] },
+          { name: "All Files", extensions: ["*"] },
+        ],
+      })
+
+      if (result.canceled || !result.filePath) return { success: false }
+
+      try {
+        const buffer = Buffer.from(options.base64Data, "base64")
+        writeFileSync(result.filePath, buffer)
+        return { success: true, filePath: result.filePath }
+      } catch (err) {
+        console.error("[dialog:save-file] Failed to write file:", err)
+        return { success: false }
+      }
+    },
+  )
 
   // Auth IPC handlers
   const validateSender = (event: Electron.IpcMainInvokeEvent): boolean => {
@@ -540,8 +578,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     title: "1Code",
     backgroundColor: nativeTheme.shouldUseDarkColors ? "#09090b" : "#ffffff",
     // hiddenInset shows native traffic lights inset in the window
-    // Start with traffic lights off-screen (custom ones shown in normal mode)
-    // Native lights will be moved on-screen in fullscreen mode
+    // hiddenInset hides the native title bar but keeps traffic lights visible
     titleBarStyle: process.platform === "darwin" ? "hiddenInset" : "default",
     trafficLightPosition:
       process.platform === "darwin" ? { x: 15, y: 12 } : undefined,
@@ -584,7 +621,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
   // Show window when ready
   window.on("ready-to-show", () => {
     console.log("[Main] Window", window.id, "ready to show")
-    // Ensure native traffic lights are visible by default (login page, loading states)
+    // Always show native macOS traffic lights
     if (process.platform === "darwin") {
       window.setWindowButtonVisibility(true)
     }
@@ -600,7 +637,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     window.webContents.send("window:fullscreen-change", true)
   })
   window.on("leave-full-screen", () => {
-    // Show native traffic lights when exiting fullscreen (TrafficLights component will manage after mount)
+    // Show native traffic lights when exiting fullscreen
     if (process.platform === "darwin") {
       window.setWindowButtonVisibility(true)
     }
@@ -690,7 +727,7 @@ export function createWindow(options?: { chatId?: string; subChatId?: string }):
     }
   }
 
-  // Ensure traffic lights are visible after page load (covers reload/Cmd+R case)
+  // Ensure native traffic lights are visible after page load
   window.webContents.on("did-finish-load", () => {
     console.log("[Main] Page finished loading in window", window.id)
     if (process.platform === "darwin") {

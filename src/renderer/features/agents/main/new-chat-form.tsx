@@ -398,6 +398,12 @@ export function NewChatForm({
   const tooltipTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const hasShownTooltipRef = useRef(false)
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false)
+
+  useEffect(() => {
+    if (!modeDropdownOpen) {
+      setModeTooltip(null)
+    }
+  }, [modeDropdownOpen])
   const [isModelDropdownOpen, setIsModelDropdownOpen] = useState(false)
 
   // Voice input state
@@ -674,6 +680,10 @@ export function NewChatForm({
     }
   }, [validatedProject?.path, fetchRemoteMutation, branchesQuery])
 
+  // Stable ref for handleRefreshBranches to avoid re-running effects on every render
+  const handleRefreshBranchesRef = useRef(handleRefreshBranches)
+  handleRefreshBranchesRef.current = handleRefreshBranches
+
   // Transform branch data to match web app format
   const branches = useMemo(() => {
     if (!branchesQuery.data) return []
@@ -823,7 +833,7 @@ export function NewChatForm({
 
         // Fetch remote branches in background when starting new workspace
         if (validatedProject?.path) {
-          handleRefreshBranches()
+          handleRefreshBranchesRef.current()
         }
       }
       return
@@ -848,7 +858,7 @@ export function NewChatForm({
         return () => clearTimeout(timeoutId)
       }
     }
-  }, [selectedDraftId, handleRefreshBranches, validatedProject?.path])
+  }, [selectedDraftId, validatedProject?.path])
 
   // Mark draft as visible when component unmounts (user navigates away)
   // This ensures the draft only appears in the sidebar after leaving the form
@@ -1472,7 +1482,7 @@ export function NewChatForm({
   }, [])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col relative">
       {/* Header - Simple burger on mobile, AgentsHeaderControls on desktop */}
       <div className="flex-shrink-0 flex items-center justify-between bg-background p-1.5">
         <div className="flex-1 min-w-0 flex items-center gap-2">
@@ -1803,7 +1813,7 @@ export function NewChatForm({
                                 ) : (
                                   <>
                                     {selectedModel?.name}{" "}
-                                    <span className="text-muted-foreground">4.5</span>
+                                    <span className="text-muted-foreground">{selectedModel?.version}</span>
                                   </>
                                 )}
                               </span>
@@ -1826,7 +1836,7 @@ export function NewChatForm({
                                     <ClaudeCodeIcon className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                                     <span>
                                       {model.name}{" "}
-                                      <span className="text-muted-foreground">4.5</span>
+                                      <span className="text-muted-foreground">{model.version}</span>
                                     </span>
                                   </div>
                                   {isSelected && (
@@ -2064,40 +2074,7 @@ export function NewChatForm({
                   )}
                 </div>
 
-                {/* Worktree config banner - absolute positioned to avoid layout shift */}
-                {showWorktreeBanner && (
-                  <div className="absolute left-0 right-0 top-full mt-2 ml-[5px] mr-[5px] p-3 pb-4 bg-muted/50 rounded-lg border border-border space-y-3">
-                    <p className="text-sm text-muted-foreground">
-                      Configure a worktree setup script to install dependencies or copy environment variables.
-                    </p>
-                    <div className="flex items-center justify-end gap-2">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={handleConfigureWorktree}
-                      >
-                        Settings
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() => {
-                          const prompt = COMMAND_PROMPTS["worktree-setup"]
-                          if (prompt && validatedProject) {
-                            createChatMutation.mutate({
-                              projectId: validatedProject.id,
-                              name: "Worktree Setup",
-                              initialMessageParts: [{ type: "text", text: prompt }],
-                              useWorktree: false,
-                              mode: "agent",
-                            })
-                          }
-                        }}
-                      >
-                        Fill with AI
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                {/* Worktree config banner - moved to corner banner below */}
 
                 {/* File mention dropdown */}
                 {/* Desktop: use projectPath for local file search */}
@@ -2137,6 +2114,44 @@ export function NewChatForm({
           )}
         </div>
       </div>
+
+      {/* Worktree config banner - fixed bottom-right corner */}
+      {showWorktreeBanner && (
+        <div className="absolute bottom-4 right-4 max-w-sm p-3 pb-4 bg-muted/50 backdrop-blur-sm rounded-lg border border-border space-y-3 shadow-lg z-50">
+          <p className="text-sm text-muted-foreground">
+            Configure a worktree setup script to install dependencies or copy
+            environment variables.
+          </p>
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleConfigureWorktree}
+            >
+              Settings
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                const prompt = COMMAND_PROMPTS["worktree-setup"]
+                if (prompt && validatedProject) {
+                  createChatMutation.mutate({
+                    projectId: validatedProject.id,
+                    name: "Worktree Setup",
+                    initialMessageParts: [
+                      { type: "text", text: prompt },
+                    ],
+                    useWorktree: false,
+                    mode: "agent",
+                  })
+                }
+              }}
+            >
+              Fill with AI
+            </Button>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

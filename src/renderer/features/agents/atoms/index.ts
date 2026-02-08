@@ -45,6 +45,9 @@ export const selectedDraftIdAtom = atom<string | null>(null)
 // Set to true when "New Workspace" is clicked
 export const showNewChatFormAtom = atom<boolean>(true)
 
+// When true, suppress auto-focus on chat input (e.g. during sidebar keyboard navigation)
+export const suppressInputFocusAtom = atom<boolean>(false)
+
 // Pending mention to insert into the editor from external components (e.g. MCP widget in sidebar)
 // When set, active-chat picks it up, calls editorRef.insertMention(), and resets to null
 export const pendingMentionAtom = atom<FileMentionOption | null>(null)
@@ -552,9 +555,13 @@ export type SelectedCommit = {
 } | null
 export const selectedCommitAtom = atom<SelectedCommit>(null)
 
+// Active tab in diff sidebar (Changes/History)
+// Exposed as atom so external components (e.g. git activity badges) can switch tabs
+export const diffActiveTabAtom = atom<"changes" | "history">("changes")
+
 // Pending PR message to send to chat
 // Set by ChatView when "Create PR" is clicked, consumed by ChatViewInner
-export const pendingPrMessageAtom = atom<string | null>(null)
+export const pendingPrMessageAtom = atom<{ message: string; subChatId: string } | null>(null)
 
 // Pending Review message to send to chat
 // Set by ChatView when "Review" is clicked, consumed by ChatViewInner
@@ -900,6 +907,7 @@ export const inboxMobileViewModeAtom = atom<InboxMobileViewMode>("list")
 export const settingsMcpSidebarWidthAtom = atom(240)
 export const settingsSkillsSidebarWidthAtom = atom(240)
 export const settingsAgentsSidebarWidthAtom = atom(240)
+export const settingsPluginsSidebarWidthAtom = atom(240)
 export const settingsKeyboardSidebarWidthAtom = atom(240)
 export const settingsProjectsSidebarWidthAtom = atom(240)
 

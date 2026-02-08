@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, useMemo, useRef } from "react"
 import { useAtom, useAtomValue, useSetAtom } from "jotai"
+import { toast } from "sonner"
 import { isDesktopApp } from "../../lib/utils/platform"
 import { useIsMobile } from "../../lib/hooks/use-mobile"
 
@@ -7,6 +8,7 @@ import {
   agentsSidebarOpenAtom,
   agentsSidebarWidthAtom,
   agentsSettingsDialogActiveTabAtom,
+  agentsSettingsDialogOpenAtom,
   isDesktopAtom,
   isFullscreenAtom,
   anthropicOnboardingCompletedAtom,
@@ -87,6 +89,7 @@ export function AgentsLayout() {
   const [sidebarOpen, setSidebarOpen] = useAtom(agentsSidebarOpenAtom)
   const [sidebarWidth, setSidebarWidth] = useAtom(agentsSidebarWidthAtom)
   const setSettingsActiveTab = useSetAtom(agentsSettingsDialogActiveTabAtom)
+  const setSettingsDialogOpen = useSetAtom(agentsSettingsDialogOpenAtom)
   const desktopView = useAtomValue(desktopViewAtom)
   const setFileSearchDialogOpen = useSetAtom(fileSearchDialogOpenAtom)
   const [selectedChatId, setSelectedChatId] = useAtom(selectedAgentChatIdAtom)
@@ -133,7 +136,7 @@ export function AgentsLayout() {
     setSelectedProject,
   ])
 
-  // Hide native traffic lights when sidebar is closed (no traffic lights needed when sidebar is closed)
+  // Show/hide native traffic lights based on sidebar state
   useEffect(() => {
     if (!isDesktop) return
     if (
@@ -142,12 +145,9 @@ export function AgentsLayout() {
     )
       return
 
-    // When sidebar is closed, hide native traffic lights
-    // When sidebar is open, TrafficLights component handles visibility
-    if (!sidebarOpen) {
-      window.desktopApi.setTrafficLightVisibility(false)
-    }
+    window.desktopApi.setTrafficLightVisibility(sidebarOpen)
   }, [sidebarOpen, isDesktop])
+
   const setChatId = useAgentSubChatStore((state) => state.setChatId)
 
   // Desktop user state
@@ -192,6 +192,39 @@ export function AgentsLayout() {
     }
   }, [validatedProject, projects, setSidebarOpen])
 
+  // Worktree setup failures from main process
+  useEffect(() => {
+    if (typeof window === "undefined") return
+    const desktopApi = window.desktopApi as any
+    if (!desktopApi?.onWorktreeSetupFailed) return
+
+    const unsubscribe = desktopApi.onWorktreeSetupFailed((payload: { kind: "create-failed" | "setup-failed"; message: string; projectId: string }) => {
+      const errorMessage = payload.message.replace(/\s+/g, " ").trim()
+      const title =
+        payload.kind === "create-failed"
+          ? "Worktree creation failed"
+          : "Worktree setup failed"
+
+      toast.error(title, {
+        description: errorMessage || undefined,
+        duration: 10000,
+        action: {
+          label: "Open settings",
+          onClick: () => {
+            const projectMatch = projects?.find((project) => project.id === payload.projectId)
+            if (projectMatch) {
+              setSelectedProject(projectMatch as any)
+            }
+            setSettingsActiveTab("projects")
+            setSettingsDialogOpen(true)
+          },
+        },
+      })
+    })
+
+    return unsubscribe
+  }, [projects, setSelectedProject, setSettingsActiveTab, setSettingsDialogOpen])
+
   // Handle sign out
   const handleSignOut = useCallback(async () => {
     // Clear selected project and anthropic onboarding on logout
@@ -203,11 +236,9 @@ export function AgentsLayout() {
     }
   }, [setSelectedProject, setSelectedChatId, setAnthropicOnboardingCompleted])
 
-  // Initialize sub-chats when chat is selected
+  // Clear sub-chat store when no chat is selected
   useEffect(() => {
-    if (selectedChatId) {
-      setChatId(selectedChatId)
-    } else {
+    if (!selectedChatId) {
       setChatId(null)
     }
   }, [selectedChatId, setChatId])

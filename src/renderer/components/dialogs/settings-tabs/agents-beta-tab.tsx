@@ -5,8 +5,7 @@ import { useQuery } from "@tanstack/react-query"
 import {
   autoOfflineModeAtom,
   betaAutomationsEnabledAtom,
-  betaKanbanEnabledAtom,
-  enableTasksAtom,
+  betaUpdatesEnabledAtom,
   historyEnabledAtom,
   selectedOllamaModelAtom,
   showOfflineModeFeaturesAtom,
@@ -51,9 +50,8 @@ export function AgentsBetaTab() {
   const [showOfflineFeatures, setShowOfflineFeatures] = useAtom(showOfflineModeFeaturesAtom)
   const [autoOffline, setAutoOffline] = useAtom(autoOfflineModeAtom)
   const [selectedOllamaModel, setSelectedOllamaModel] = useAtom(selectedOllamaModelAtom)
-  const [kanbanEnabled, setKanbanEnabled] = useAtom(betaKanbanEnabledAtom)
   const [automationsEnabled, setAutomationsEnabled] = useAtom(betaAutomationsEnabledAtom)
-  const [enableTasks, setEnableTasks] = useAtom(enableTasksAtom)
+  const [betaUpdatesEnabled, setBetaUpdatesEnabled] = useAtom(betaUpdatesEnabledAtom)
 
   // Check subscription to gate automations behind paid plan
   const { data: subscription } = useQuery({
@@ -68,9 +66,12 @@ export function AgentsBetaTab() {
   const [updateVersion, setUpdateVersion] = useState<string | null>(null)
   const [currentVersion, setCurrentVersion] = useState<string | null>(null)
 
-  // Get current version on mount
+  // Get current version on mount and sync update channel state
   useEffect(() => {
     window.desktopApi?.getVersion().then(setCurrentVersion)
+    window.desktopApi?.getUpdateChannel().then((ch) => {
+      setBetaUpdatesEnabled(ch === "beta")
+    })
   }, [])
 
   // Check for updates with force flag to bypass cache
@@ -157,22 +158,6 @@ export function AgentsBetaTab() {
           />
         </div>
 
-        {/* Kanban Board Toggle */}
-        <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
-            <span className="text-sm font-medium text-foreground">
-              Kanban Board
-            </span>
-            <span className="text-xs text-muted-foreground">
-              View workspaces as a Kanban board organized by status.
-            </span>
-          </div>
-          <Switch
-            checked={kanbanEnabled}
-            onCheckedChange={setKanbanEnabled}
-          />
-        </div>
-
         {/* Automations & Inbox Toggle */}
         <div className="flex items-center justify-between p-4 border-t border-border">
           <div className="flex flex-col space-y-1">
@@ -196,21 +181,6 @@ export function AgentsBetaTab() {
           />
         </div>
 
-        {/* Agent Tasks Toggle */}
-        <div className="flex items-center justify-between p-4 border-t border-border">
-          <div className="flex flex-col space-y-1">
-            <span className="text-sm font-medium text-foreground">
-              Agent Tasks
-            </span>
-            <span className="text-xs text-muted-foreground">
-              Enable Task instead of legacy Todo system.
-            </span>
-          </div>
-          <Switch
-            checked={enableTasks}
-            onCheckedChange={setEnableTasks}
-          />
-        </div>
       </div>
 
       {/* Offline Mode Settings - only show when feature is enabled */}
@@ -362,8 +332,27 @@ export function AgentsBetaTab() {
           </p>
         </div>
 
+        {/* Early Access section hidden until beta-mac.yml is published to CDN
         <div className="bg-background rounded-lg border border-border overflow-hidden">
-          <div className="p-4">
+          <div className="flex items-center justify-between p-4">
+            <div className="flex flex-col space-y-1">
+              <span className="text-sm font-medium text-foreground">
+                Early Access
+              </span>
+              <span className="text-xs text-muted-foreground">
+                Receive beta versions before they're released to everyone. Beta versions may be less stable.
+              </span>
+            </div>
+            <Switch
+              checked={betaUpdatesEnabled}
+              onCheckedChange={(checked) => {
+                setBetaUpdatesEnabled(checked)
+                window.desktopApi?.setUpdateChannel(checked ? "beta" : "latest")
+              }}
+            />
+          </div>
+
+          <div className="p-4 border-t border-border">
             <div className="flex items-center justify-between">
               <div className="flex flex-col space-y-1">
                 <span className="text-sm font-medium text-foreground">
@@ -389,6 +378,7 @@ export function AgentsBetaTab() {
             </div>
           </div>
         </div>
+        */}
       </div>
     </div>
   )

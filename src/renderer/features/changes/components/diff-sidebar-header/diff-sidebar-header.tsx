@@ -47,7 +47,9 @@ import { cn } from "../../../../lib/utils";
 import { usePRStatus } from "../../../../hooks/usePRStatus";
 import { PRIcon } from "../pr-icon";
 import { toast } from "sonner";
-import { DiffModeEnum } from "@git-diff-view/react";
+import type { DiffViewMode } from "@/features/agents/ui/agent-diff-view";
+import { getSyncActionKind } from "../../utils/sync-actions";
+import { usePushAction } from "../../hooks/use-push-action";
 
 interface DiffStats {
 	isLoading: boolean;
@@ -92,8 +94,8 @@ interface DiffSidebarHeaderProps {
 	// Diff view controls
 	onExpandAll?: () => void;
 	onCollapseAll?: () => void;
-	viewMode?: DiffModeEnum;
-	onViewModeChange?: (mode: DiffModeEnum) => void;
+	viewMode?: DiffViewMode;
+	onViewModeChange?: (mode: DiffViewMode) => void;
 	// Viewed files controls
 	viewedCount?: number;
 	onMarkAllViewed?: () => void;
@@ -144,7 +146,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 	onFixConflicts,
 	onExpandAll,
 	onCollapseAll,
-	viewMode = DiffModeEnum.Unified,
+	viewMode = "unified",
 	onViewModeChange,
 	viewedCount = 0,
 	onMarkAllViewed,
@@ -181,11 +183,10 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		},
 	});
 
-	const pushMutation = trpc.changes.push.useMutation({
-		onSuccess: () => {
-			onRefresh?.();
-		},
-		onError: (error) => toast.error(`Push failed: ${error.message}`),
+	const { push: pushBranch, isPending: isPushPending } = usePushAction({
+		worktreePath,
+		hasUpstream,
+		onSuccess: onRefresh,
 	});
 
 	const pullMutation = trpc.changes.pull.useMutation({
@@ -241,7 +242,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 	};
 
 	const handlePush = () => {
-		pushMutation.mutate({ worktreePath, setUpstream: !hasUpstream });
+		pushBranch();
 	};
 
 	const handlePull = () => {
@@ -277,9 +278,14 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 	}, []);
 
 	// Check pending states
-	const isPushPending = pushMutation.isPending;
 	const isPullPending = pullMutation.isPending;
 	const isFetchPending = isRefreshing || fetchMutation.isPending;
+	const syncActionKind = getSyncActionKind({
+		hasUpstream,
+		pullCount,
+		pushCount,
+		isSyncStatusLoading,
+	});
 
 	// ============ NEW BUTTON LOGIC ============
 	// Priority:
@@ -304,7 +310,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 
 	const getPrimaryAction = (): ActionButton => {
 		// 0. Loading state - show loading indicator
-		if (isSyncStatusLoading) {
+		if (syncActionKind === "loading") {
 			return {
 				label: "",
 				pendingLabel: "",
@@ -318,7 +324,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		}
 
 		// 1. Branch not published - must publish first
-		if (!hasUpstream) {
+		if (syncActionKind === "publish") {
 			return {
 				label: "Publish",
 				pendingLabel: "Publishing...",
@@ -331,7 +337,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		}
 
 		// 2. Remote has changes we need to pull first
-		if (pullCount > 0) {
+		if (syncActionKind === "pull") {
 			return {
 				label: "Pull",
 				pendingLabel: "Pulling...",
@@ -345,7 +351,7 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 		}
 
 		// 3. We have commits to push
-		if (pushCount > 0) {
+		if (syncActionKind === "push") {
 			return {
 				label: "Push",
 				pendingLabel: "Pushing...",
@@ -809,24 +815,24 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 				{showViewModeToggle && onViewModeChange && (
 					<div className="inline-flex rounded-md border border-input">
 						<Button
-							variant={viewMode === DiffModeEnum.Split ? "secondary" : "ghost"}
+							variant={viewMode === "split" ? "secondary" : "ghost"}
 							size="sm"
-							onClick={() => onViewModeChange(DiffModeEnum.Split)}
+							onClick={() => onViewModeChange("split")}
 							className={cn(
 								"h-6 w-6 p-0 rounded-r-none border-0",
-								viewMode !== DiffModeEnum.Split && "hover:bg-foreground/10"
+								viewMode !== "split" && "hover:bg-foreground/10"
 							)}
 							title="Split view"
 						>
 							<Columns2 className="size-3.5" />
 						</Button>
 						<Button
-							variant={viewMode === DiffModeEnum.Unified ? "secondary" : "ghost"}
+							variant={viewMode === "unified" ? "secondary" : "ghost"}
 							size="sm"
-							onClick={() => onViewModeChange(DiffModeEnum.Unified)}
+							onClick={() => onViewModeChange("unified")}
 							className={cn(
 								"h-6 w-6 p-0 rounded-l-none border-0 border-l border-input",
-								viewMode !== DiffModeEnum.Unified && "hover:bg-foreground/10"
+								viewMode !== "unified" && "hover:bg-foreground/10"
 							)}
 							title="Unified view"
 						>
@@ -890,15 +896,15 @@ export const DiffSidebarHeader = memo(function DiffSidebarHeader({
 									</DropdownMenuSubTrigger>
 									<DropdownMenuSubContent>
 										<DropdownMenuItem
-											onClick={() => onViewModeChange(DiffModeEnum.Split)}
-											className={cn("text-xs", viewMode === DiffModeEnum.Split && "bg-muted")}
+											onClick={() => onViewModeChange("split")}
+											className={cn("text-xs", viewMode === "split" && "bg-muted")}
 										>
 											<Columns2 className="mr-2 size-3.5" />
 											<span>Split view</span>
 										</DropdownMenuItem>
 										<DropdownMenuItem
-											onClick={() => onViewModeChange(DiffModeEnum.Unified)}
-											className={cn("text-xs", viewMode === DiffModeEnum.Unified && "bg-muted")}
+											onClick={() => onViewModeChange("unified")}
+											className={cn("text-xs", viewMode === "unified" && "bg-muted")}
 										>
 											<Rows2 className="mr-2 size-3.5" />
 											<span>Unified view</span>
