@@ -95,5 +95,5 @@ jobs:
           files: |
             artifacts/**/*.dmg
             artifacts/**/*.zip
-          prerelease: ${{ steps.release_info.outputs.prerelease }}
+          #prerelease: ${{ steps.release_info.outputs.prerelease }}
           generate_release_notes: true
